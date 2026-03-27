@@ -60,6 +60,7 @@ export class InputReader {
       const done = (result: string | null) => {
         if (resolved) return;
         resolved = true;
+        closeMenu();
         stdin.removeListener("data", onData);
         stdin.setRawMode(false);
         stdin.pause();
@@ -80,6 +81,71 @@ export class InputReader {
         stdout.write(`\r\x1b[K${p}${line}`);
         const back = line.length - cursor;
         if (back > 0) stdout.write(`\x1b[${back}D`);
+      };
+
+      // Menu state for interactive slash command dropdown
+      let menuOpen = false;
+      let menuIdx = 0;
+      let menuItems: Array<{ cmd: string; desc: string }> = [];
+
+      const getFilteredCommands = (text: string) =>
+        SLASH_COMMANDS.filter((c) => c.cmd.startsWith(text));
+
+      const renderMenu = () => {
+        if (menuItems.length === 0) return;
+        for (let m = 0; m < menuItems.length; m++) {
+          const item = menuItems[m];
+          const isSelected = m === menuIdx;
+          const prefix = isSelected ? boldCyan("❯") : " ";
+          const cmdStr = isSelected ? boldCyan(item.cmd) : dim(item.cmd);
+          const descStr = dim(item.desc);
+          stdout.write(`\n  ${prefix} ${cmdStr}  ${descStr}`);
+        }
+        stdout.write(`\x1b[${menuItems.length}A`);
+        const p = currentPrompt();
+        const vis = visibleLength(p);
+        stdout.write(`\r\x1b[${vis + cursor}C`);
+      };
+
+      const clearMenu = () => {
+        if (menuItems.length === 0) return;
+        stdout.write("\x1b7");
+        for (let m = 0; m < menuItems.length; m++) {
+          stdout.write("\n\x1b[2K");
+        }
+        stdout.write("\x1b8");
+      };
+
+      const openMenu = (text: string) => {
+        menuItems = getFilteredCommands(text);
+        if (menuItems.length > 0) {
+          menuIdx = 0;
+          menuOpen = true;
+          renderMenu();
+        } else {
+          menuOpen = false;
+        }
+      };
+
+      const closeMenu = () => {
+        if (menuOpen) {
+          clearMenu();
+          menuOpen = false;
+          menuItems = [];
+          menuIdx = 0;
+        }
+      };
+
+      const updateMenu = (text: string) => {
+        if (menuOpen) clearMenu();
+        menuItems = getFilteredCommands(text);
+        if (menuItems.length > 0) {
+          menuIdx = Math.min(menuIdx, menuItems.length - 1);
+          menuOpen = true;
+          renderMenu();
+        } else {
+          menuOpen = false;
+        }
       };
 
       const onData = (chunk: Buffer) => {
@@ -126,76 +192,6 @@ export class InputReader {
         }
 
         // ── Single-character processing ──
-
-        // Menu state for interactive slash command dropdown
-        let menuOpen = false;
-        let menuIdx = 0;
-        let menuItems: Array<{ cmd: string; desc: string }> = [];
-
-        const getFilteredCommands = (text: string) =>
-          SLASH_COMMANDS.filter((c) => c.cmd.startsWith(text));
-
-        const renderMenu = () => {
-          if (menuItems.length === 0) return;
-          // Draw menu below current line
-          for (let m = 0; m < menuItems.length; m++) {
-            const item = menuItems[m];
-            const isSelected = m === menuIdx;
-            const prefix = isSelected ? boldCyan("❯") : " ";
-            const cmdStr = isSelected ? boldCyan(item.cmd) : dim(item.cmd);
-            const descStr = dim(item.desc);
-            stdout.write(`\n  ${prefix} ${cmdStr}  ${descStr}`);
-          }
-          // Move cursor back up to the input line
-          stdout.write(`\x1b[${menuItems.length}A`);
-          // Restore cursor horizontal position
-          const p = currentPrompt();
-          const vis = visibleLength(p);
-          stdout.write(`\r\x1b[${vis + cursor}C`);
-        };
-
-        const clearMenu = () => {
-          if (menuItems.length === 0) return;
-          // Save cursor, move down and clear each menu line, restore cursor
-          stdout.write("\x1b7"); // save cursor
-          for (let m = 0; m < menuItems.length; m++) {
-            stdout.write("\n\x1b[2K"); // move down, clear line
-          }
-          stdout.write("\x1b8"); // restore cursor
-        };
-
-        const openMenu = (text: string) => {
-          menuItems = getFilteredCommands(text);
-          if (menuItems.length > 0) {
-            menuIdx = 0;
-            menuOpen = true;
-            renderMenu();
-          } else {
-            menuOpen = false;
-          }
-        };
-
-        const closeMenu = () => {
-          if (menuOpen) {
-            clearMenu();
-            menuOpen = false;
-            menuItems = [];
-            menuIdx = 0;
-          }
-        };
-
-        const updateMenu = (text: string) => {
-          if (menuOpen) clearMenu();
-          menuItems = getFilteredCommands(text);
-          if (menuItems.length > 0) {
-            menuIdx = Math.min(menuIdx, menuItems.length - 1);
-            menuOpen = true;
-            renderMenu();
-          } else {
-            menuOpen = false;
-          }
-        };
-
         for (let i = 0; i < data.length; i++) {
           const ch = data[i];
           const code = data.charCodeAt(i);
