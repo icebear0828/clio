@@ -1,13 +1,23 @@
 import { stdin, stdout } from "node:process";
 import * as readline from "node:readline/promises";
-import { dim } from "./render.js";
+import { dim, cyan, boldCyan } from "./render.js";
 
 const CONTINUATION_PROMPT = "... ";
 
-const SLASH_COMMANDS = [
-  "/clear", "/commit", "/compact", "/cost", "/exit",
-  "/help", "/init", "/model", "/pr", "/review",
-  "/sessions", "/settings", "/quit",
+const SLASH_COMMANDS: Array<{ cmd: string; desc: string }> = [
+  { cmd: "/clear",    desc: "Reset conversation" },
+  { cmd: "/commit",   desc: "Generate commit message" },
+  { cmd: "/compact",  desc: "Compress context" },
+  { cmd: "/cost",     desc: "Show token usage" },
+  { cmd: "/exit",     desc: "Save and quit" },
+  { cmd: "/help",     desc: "Show commands" },
+  { cmd: "/init",     desc: "Generate CLAUDE.md" },
+  { cmd: "/model",    desc: "Show/switch model" },
+  { cmd: "/pr",       desc: "Create pull request" },
+  { cmd: "/review",   desc: "Review git diff" },
+  { cmd: "/sessions", desc: "List saved sessions" },
+  { cmd: "/settings", desc: "Show config" },
+  { cmd: "/quit",     desc: "Quit" },
 ];
 
 /** Strip ANSI escape codes to get visible character count */
@@ -116,6 +126,76 @@ export class InputReader {
         }
 
         // ── Single-character processing ──
+
+        // Menu state for interactive slash command dropdown
+        let menuOpen = false;
+        let menuIdx = 0;
+        let menuItems: Array<{ cmd: string; desc: string }> = [];
+
+        const getFilteredCommands = (text: string) =>
+          SLASH_COMMANDS.filter((c) => c.cmd.startsWith(text));
+
+        const renderMenu = () => {
+          if (menuItems.length === 0) return;
+          // Draw menu below current line
+          for (let m = 0; m < menuItems.length; m++) {
+            const item = menuItems[m];
+            const isSelected = m === menuIdx;
+            const prefix = isSelected ? boldCyan("❯") : " ";
+            const cmdStr = isSelected ? boldCyan(item.cmd) : dim(item.cmd);
+            const descStr = dim(item.desc);
+            stdout.write(`\n  ${prefix} ${cmdStr}  ${descStr}`);
+          }
+          // Move cursor back up to the input line
+          stdout.write(`\x1b[${menuItems.length}A`);
+          // Restore cursor horizontal position
+          const p = currentPrompt();
+          const vis = visibleLength(p);
+          stdout.write(`\r\x1b[${vis + cursor}C`);
+        };
+
+        const clearMenu = () => {
+          if (menuItems.length === 0) return;
+          // Save cursor, move down and clear each menu line, restore cursor
+          stdout.write("\x1b7"); // save cursor
+          for (let m = 0; m < menuItems.length; m++) {
+            stdout.write("\n\x1b[2K"); // move down, clear line
+          }
+          stdout.write("\x1b8"); // restore cursor
+        };
+
+        const openMenu = (text: string) => {
+          menuItems = getFilteredCommands(text);
+          if (menuItems.length > 0) {
+            menuIdx = 0;
+            menuOpen = true;
+            renderMenu();
+          } else {
+            menuOpen = false;
+          }
+        };
+
+        const closeMenu = () => {
+          if (menuOpen) {
+            clearMenu();
+            menuOpen = false;
+            menuItems = [];
+            menuIdx = 0;
+          }
+        };
+
+        const updateMenu = (text: string) => {
+          if (menuOpen) clearMenu();
+          menuItems = getFilteredCommands(text);
+          if (menuItems.length > 0) {
+            menuIdx = Math.min(menuIdx, menuItems.length - 1);
+            menuOpen = true;
+            renderMenu();
+          } else {
+            menuOpen = false;
+          }
+        };
+
         for (let i = 0; i < data.length; i++) {
           const ch = data[i];
           const code = data.charCodeAt(i);
@@ -126,8 +206,12 @@ export class InputReader {
             i += 2;
 
             if (seq === "A") {
-              // Up — history (only on first line)
-              if (lineIdx === 0 && savedHistoryIdx > 0) {
+              // Up
+              if (menuOpen) {
+                clearMenu();
+                menuIdx = (menuIdx - 1 + menuItems.length) % menuItems.length;
+                renderMenu();
+              } else if (lineIdx === 0 && savedHistoryIdx > 0) {
                 savedHistoryIdx--;
                 lines[0] = this.history[savedHistoryIdx];
                 lineIdx = 0;
@@ -135,8 +219,12 @@ export class InputReader {
                 redraw();
               }
             } else if (seq === "B") {
-              // Down — history
-              if (lineIdx === 0 && savedHistoryIdx < this.history.length) {
+              // Down
+              if (menuOpen) {
+                clearMenu();
+                menuIdx = (menuIdx + 1) % menuItems.length;
+                renderMenu();
+              } else if (lineIdx === 0 && savedHistoryIdx < this.history.length) {
                 savedHistoryIdx++;
                 lines[0] =
                   savedHistoryIdx < this.history.length
@@ -158,18 +246,25 @@ export class InputReader {
                 stdout.write("\x1b[D");
               }
             }
-            // Skip other escape sequences
+            continue;
+          }
+
+          // Escape key (close menu)
+          if (code === 27) {
+            if (menuOpen) closeMenu();
             continue;
           }
 
           // Ctrl+C
           if (code === 3) {
+            closeMenu();
             done(null);
             return;
           }
 
           // Ctrl+D on empty buffer
           if (code === 4 && lines.every((l) => l === "")) {
+            closeMenu();
             done(null);
             return;
           }
@@ -182,12 +277,30 @@ export class InputReader {
                 lines[lineIdx].slice(cursor);
               cursor--;
               redraw();
+
+              // Update or close menu based on remaining text
+              const remaining = lines[lineIdx];
+              if (remaining.startsWith("/") && lineIdx === 0) {
+                updateMenu(remaining);
+              } else {
+                closeMenu();
+              }
             }
             continue;
           }
 
           // Enter
           if (ch === "\r" || ch === "\n") {
+            // If menu is open, select the highlighted item
+            if (menuOpen && menuItems.length > 0) {
+              const selected = menuItems[menuIdx].cmd;
+              closeMenu();
+              lines[lineIdx] = selected;
+              cursor = selected.length;
+              redraw();
+              continue; // don't submit, let user press Enter again or add args
+            }
+
             const currentLine = lines[lineIdx];
 
             // Backslash continuation
@@ -201,12 +314,14 @@ export class InputReader {
             }
 
             // Submit
+            closeMenu();
             done(lines.join("\n"));
             return;
           }
 
           // Ctrl+U — clear to start of line
           if (code === 21) {
+            closeMenu();
             lines[lineIdx] = lines[lineIdx].slice(cursor);
             cursor = 0;
             redraw();
@@ -216,17 +331,21 @@ export class InputReader {
           // Tab → slash command completion or 2 spaces
           if (code === 9) {
             const currentText = lines[lineIdx];
-            if (currentText.startsWith("/") && lineIdx === 0) {
-              const matches = SLASH_COMMANDS.filter((c) => c.startsWith(currentText));
+            if (menuOpen && menuItems.length > 0) {
+              // Tab in menu = select current item
+              const selected = menuItems[menuIdx].cmd;
+              closeMenu();
+              lines[lineIdx] = selected;
+              cursor = selected.length;
+              redraw();
+            } else if (currentText.startsWith("/") && lineIdx === 0) {
+              const matches = getFilteredCommands(currentText);
               if (matches.length === 1) {
-                lines[lineIdx] = matches[0];
-                cursor = matches[0].length;
+                lines[lineIdx] = matches[0].cmd;
+                cursor = matches[0].cmd.length;
                 redraw();
               } else if (matches.length > 1) {
-                // Show candidates
-                stdout.write(`\n${dim(matches.join("  "))}\n`);
-                const p = currentPrompt();
-                stdout.write(`${p}${currentText}`);
+                openMenu(currentText);
               }
             } else {
               lines[lineIdx] =
@@ -248,11 +367,16 @@ export class InputReader {
             cursor++;
             redraw();
 
-            // Auto-show slash commands when typing "/" on empty first line
-            if (ch === "/" && lineIdx === 0 && lines[0] === "/") {
-              stdout.write(`\n${dim(SLASH_COMMANDS.join("  "))}\n`);
-              const p = currentPrompt();
-              stdout.write(`${p}${lines[lineIdx]}`);
+            // Auto-open/update menu when typing "/" commands
+            const currentText = lines[lineIdx];
+            if (currentText.startsWith("/") && lineIdx === 0) {
+              if (menuOpen) {
+                updateMenu(currentText);
+              } else {
+                openMenu(currentText);
+              }
+            } else if (menuOpen) {
+              closeMenu();
             }
           }
         }
