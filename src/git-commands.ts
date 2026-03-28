@@ -1,6 +1,9 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import * as readline from "node:readline/promises";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+import * as os from "node:os";
 import { apiRequest } from "./client.js";
 import { bold, dim, red, green, cyan } from "./render.js";
 import type { Config } from "./types.js";
@@ -93,10 +96,15 @@ export async function commitCommand(config: Config): Promise<void> {
     }
   }
 
-  // Commit
-  const escaped = finalMessage.replace(/"/g, '\\"');
-  await run(`git commit -m "${escaped}"`);
-  console.log(green("  Committed!\n"));
+  // Commit via temp file (avoids shell escaping issues across platforms)
+  const tmpFile = path.join(os.tmpdir(), `c2a-commit-${Date.now()}.txt`);
+  try {
+    await fs.writeFile(tmpFile, finalMessage, "utf-8");
+    await run(`git commit -F "${tmpFile}"`);
+    console.log(green("  Committed!\n"));
+  } finally {
+    await fs.unlink(tmpFile).catch(() => {});
+  }
 }
 
 // ─── /pr ───
@@ -188,10 +196,16 @@ export async function prCommand(config: Config): Promise<void> {
     await run(`git push -u origin ${branch}`);
   }
 
-  // Create PR
-  const escapedTitle = title.replace(/"/g, '\\"');
-  const escapedBody = body.replace(/"/g, '\\"').replace(/`/g, "\\`");
-  const prUrl = await run(`gh pr create --title "${escapedTitle}" --body "${escapedBody}"`);
+  // Create PR via temp file for body (avoids shell escaping issues)
+  const bodyFile = path.join(os.tmpdir(), `c2a-pr-body-${Date.now()}.txt`);
+  let prUrl: string;
+  try {
+    await fs.writeFile(bodyFile, body, "utf-8");
+    const escapedTitle = title.replace(/'/g, "'\\''");
+    prUrl = await run(`gh pr create --title '${escapedTitle}' --body-file "${bodyFile}"`);
+  } finally {
+    await fs.unlink(bodyFile).catch(() => {});
+  }
   console.log(green(`  PR created: ${prUrl}\n`));
 }
 

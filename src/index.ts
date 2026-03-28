@@ -1,22 +1,122 @@
 #!/usr/bin/env node
 
-import { runAgentLoop } from "./agent.js";
+import { runAgentLoop, getContextLimit } from "./agent.js";
 import { compactConversation } from "./compact.js";
 import { initClaudeMd } from "./init.js";
 import { commitCommand, prCommand, reviewCommand } from "./git-commands.js";
 import { SessionManager } from "./session.js";
-import { bold, dim, red, boldCyan, dimCyan } from "./render.js";
+import { bold, dim, red, green, yellow, cyan, blue, magenta, boldCyan, dimCyan, toggleVerbose, getTheme, setTheme, type Theme } from "./render.js";
+import { estimateCost, formatUSD } from "./pricing.js";
+import { streamRequest } from "./client.js";
+import { buildSystemPrompt } from "./context.js";
+import { MarkdownRenderer } from "./markdown.js";
 import { PermissionManager } from "./permissions.js";
 import { InputReader } from "./input.js";
 import { loadSettings, getSettingsInfo, type Settings } from "./settings.js";
-import { setAllowOutsideCwd } from "./tools.js";
+import { setAllowOutsideCwd, setToolContext, setMcpManager } from "./tools.js";
+import { McpManager, setGlobalMcpManager } from "./mcp.js";
+import { taskStore } from "./tasks.js";
+import { loadCustomAgents, listCustomAgents } from "./custom-agents.js";
 import { parseInputWithImages } from "./image.js";
 import { StatusBar } from "./statusbar.js";
+import { FileCompleter, resolveFileReferences } from "./file-completions.js";
+import { CheckpointManager } from "./checkpoint.js";
+import { stdin } from "node:process";
 import type { ApiFormat, Config, Message, PermissionMode, UsageStats } from "./types.js";
+
+interface EscapeHandler {
+  cleanup: () => void;
+  pause: () => void;
+  resume: () => void;
+}
+
+function withEscapeInterrupt(
+  abort: AbortController,
+  onDoubleEscape?: () => void,
+): EscapeHandler {
+  const noop: EscapeHandler = { cleanup() {}, pause() {}, resume() {} };
+  if (!stdin.isTTY) return noop;
+
+  let paused = false;
+  let lastEscTime = 0;
+  let escTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const onData = (buf: Buffer) => {
+    if (paused) return;
+    if (buf.length === 1 && buf[0] === 3) {
+      abort.abort();
+      return;
+    }
+    if (buf.length === 1 && buf[0] === 0x1b) {
+      const now = Date.now();
+      if (now - lastEscTime < 500 && onDoubleEscape) {
+        if (escTimer) clearTimeout(escTimer);
+        escTimer = null;
+        onDoubleEscape();
+      } else {
+        lastEscTime = now;
+        escTimer = setTimeout(() => {
+          escTimer = null;
+          abort.abort();
+        }, 500);
+      }
+      return;
+    }
+  };
+
+  stdin.setRawMode(true);
+  stdin.resume();
+  stdin.on("data", onData);
+
+  return {
+    cleanup() {
+      if (escTimer) clearTimeout(escTimer);
+      stdin.removeListener("data", onData);
+      stdin.setRawMode(false);
+      stdin.pause();
+    },
+    pause() {
+      paused = true;
+      stdin.setRawMode(false);
+    },
+    resume() {
+      paused = false;
+      stdin.setRawMode(true);
+    },
+  };
+}
+
+let escapeControl: EscapeHandler | null = null;
+
+async function promptRollback(cm: CheckpointManager): Promise<boolean> {
+  const files = cm.getModifiedFiles();
+  process.stderr.write(`\n  ${boldCyan("── Rollback ──")}\n`);
+  for (const f of files) {
+    const icon = f.isNew ? green("+") : yellow("M");
+    process.stderr.write(`    ${icon} ${dim(f.filePath)}\n`);
+  }
+  process.stderr.write(`\n  ${dim("Roll back file changes?")} ${boldCyan("[y/N]")} `);
+
+  return new Promise<boolean>((resolve) => {
+    if (!stdin.isTTY) { resolve(false); return; }
+    stdin.setRawMode(true);
+    stdin.resume();
+    const onData = (buf: Buffer) => {
+      stdin.removeListener("data", onData);
+      stdin.setRawMode(false);
+      stdin.pause();
+      const ch = buf.toString();
+      const yes = ch === "y" || ch === "Y";
+      process.stderr.write(yes ? "y\n" : "n\n");
+      resolve(yes);
+    };
+    stdin.on("data", onData);
+  });
+}
 
 const VALID_MODES: PermissionMode[] = ["default", "auto", "plan"];
 
-function loadConfig(settings: Settings): { config: Config; resumeId?: string; cliAllowRules: string[] } {
+function loadConfig(settings: Settings): { config: Config; resumeId?: string; forkSessionId?: string; cliAllowRules: string[] } {
   const config: Config = {
     apiUrl: settings.apiUrl ?? process.env.CLAUDE2API_URL ?? process.env.ANTHROPIC_BASE_URL ?? "https://api.anthropic.com",
     apiKey: settings.apiKey ?? process.env.CLAUDE2API_KEY ?? process.env.ANTHROPIC_API_KEY ?? "",
@@ -26,6 +126,7 @@ function loadConfig(settings: Settings): { config: Config; resumeId?: string; cl
     apiFormat: settings.apiFormat ?? "anthropic",
   };
   let resumeId: string | undefined;
+  let forkSessionId: string | undefined;
   const cliAllowRules: string[] = [];
 
   // CLI args override settings file
@@ -35,6 +136,7 @@ function loadConfig(settings: Settings): { config: Config; resumeId?: string; cl
     else if (args[i] === "--api-key" && args[i + 1]) config.apiKey = args[++i];
     else if (args[i] === "--model" && args[i + 1]) config.model = args[++i];
     else if (args[i] === "--resume" && args[i + 1]) resumeId = args[++i];
+    else if (args[i] === "--fork-session" && args[i + 1]) forkSessionId = args[++i];
     else if (args[i] === "--thinking" && args[i + 1]) config.thinkingBudget = parseInt(args[++i], 10);
     else if (args[i] === "--api-format" && args[i + 1]) config.apiFormat = args[++i] as ApiFormat;
     else if (args[i] === "--allow" && args[i + 1]) cliAllowRules.push(args[++i]);
@@ -59,6 +161,7 @@ Options:
   --api-key <key>          API key    (env: CLAUDE2API_KEY or ANTHROPIC_API_KEY)
   --model   <model>        Model name (env: CLAUDE2API_MODEL, default: claude-sonnet-4-20250514)
   --resume  <id>           Resume a previous session
+  --fork-session <id>    Fork from an existing session
   --thinking <tokens>      Enable extended thinking with budget (e.g. 10000)
   --api-format <fmt>       API format: anthropic | openai (default: anthropic)
   --permission-mode <mode> Permission mode: default, auto, plan (default: default)
@@ -76,24 +179,63 @@ Options:
     process.exit(1);
   }
 
-  return { config, resumeId, cliAllowRules };
+  return { config, resumeId, forkSessionId, cliAllowRules };
 }
 
 async function main(): Promise<void> {
   const settings = await loadSettings();
-  const { config, resumeId, cliAllowRules } = loadConfig(settings);
+  await loadCustomAgents();
+  const { config, resumeId, forkSessionId, cliAllowRules } = loadConfig(settings);
 
   // Merge allow rules: settings file + CLI flags
   const allowRules = [...(settings.allowRules ?? []), ...cliAllowRules];
 
   // Apply workspace restriction setting
   if (settings.allowOutsideCwd) setAllowOutsideCwd(true);
-  const permissionManager = new PermissionManager(config.permissionMode, allowRules);
+  const denyRules = [...(settings.denyRules ?? [])];
+  const permissionManager = new PermissionManager(config.permissionMode, allowRules, denyRules);
+
+  if (settings.autoClassifier?.enabled) {
+    permissionManager.setAutoClassifier({
+      enabled: true,
+      safePatterns: settings.autoClassifier.safePatterns,
+      dangerousPatterns: settings.autoClassifier.dangerousPatterns,
+    });
+  }
+
+  // Start MCP servers
+  let mcpMgr: McpManager | null = null;
+  if (settings.mcpServers && Object.keys(settings.mcpServers).length > 0) {
+    mcpMgr = new McpManager();
+    await mcpMgr.startAll(settings.mcpServers);
+    setMcpManager(mcpMgr);
+    setGlobalMcpManager(mcpMgr);
+  }
   const reader = new InputReader();
   const messages: Message[] = [];
   const sessionUsage: UsageStats = { inputTokens: 0, outputTokens: 0 };
-  const session = new SessionManager(config.model);
+  let session = new SessionManager(config.model);
   const statusBar = new StatusBar();
+  const checkpointManager = new CheckpointManager();
+  const fileCompleter = new FileCompleter(process.cwd());
+  reader.setFileCompleter(fileCompleter);
+
+  setToolContext({
+    config,
+    permissionControl: permissionManager,
+    askUser: async (question: string) => {
+      process.stderr.write(`\n  ${boldCyan("?")} ${question}\n`);
+      escapeControl?.pause();
+      try {
+        const answer = await reader.read(`  ${dim(">")} `);
+        return answer ?? "(no answer)";
+      } finally {
+        escapeControl?.resume();
+      }
+    },
+  });
+
+  console.clear();
 
   // Resume previous session
   if (resumeId) {
@@ -102,56 +244,72 @@ async function main(): Promise<void> {
       messages.push(...restored.messages);
       sessionUsage.inputTokens = restored.usage.inputTokens;
       sessionUsage.outputTokens = restored.usage.outputTokens;
-      console.log(dim(`  Resumed session ${resumeId} (${messages.length} messages)\n`));
     } else {
       console.error(red(`  Session ${resumeId} not found.\n`));
     }
   }
 
-  console.clear();
-
-  // ── Beautiful startup banner ──
-  const cols = process.stdout.columns ?? 80;
-  const width = Math.min(cols - 4, 56);
-  const line = "─".repeat(width - 2);
-
-  console.log();
-  console.log(dimCyan(`  ╭${line}╮`));
-  console.log(dimCyan("  │") + " ".repeat(width - 2) + dimCyan("│"));
-
-  const title = `◆ Claude Code`;
-  const modelTag = `(${config.model})`;
-  const titleLine = `  ${boldCyan(title)} ${dim(modelTag)}`;
-  const titleLen = title.length + 1 + modelTag.length;
-  const titlePad = Math.max(0, width - 2 - titleLen);
-  console.log(dimCyan("  │") + ` ${boldCyan("◆")} ${bold("Claude Code")} ${dim(modelTag)}` + " ".repeat(titlePad) + dimCyan("│"));
-
-  console.log(dimCyan("  │") + " ".repeat(width - 2) + dimCyan("│"));
-
-  const infoLines = [
-    [`  ${dim("Gateway")}`, dim(config.apiUrl)],
-    [`  ${dim("cwd")}    `, dim(process.cwd())],
-    [`  ${dim("session")} `, dim(session.getId())],
-    [`  ${dim("mode")}   `, dim(config.permissionMode)],
-  ];
-
-  for (const [label, value] of infoLines) {
-    const content = `${label}  ${value}`;
-    // Rough visible length (strip ANSI)
-    const visible = content.replace(/\x1b\[[0-9;]*m/g, "").length;
-    const pad = Math.max(0, width - 2 - visible);
-    console.log(dimCyan("  │") + content + " ".repeat(pad) + dimCyan("│"));
+  // Fork from existing session
+  if (forkSessionId) {
+    const forked = await SessionManager.fork(forkSessionId, config.model);
+    if (forked) {
+      session = forked.manager;
+      messages.push(...forked.messages);
+      sessionUsage.inputTokens = forked.usage.inputTokens;
+      sessionUsage.outputTokens = forked.usage.outputTokens;
+    } else {
+      console.error(red(`  Session ${forkSessionId} not found.\n`));
+    }
   }
 
-  console.log(dimCyan("  │") + " ".repeat(width - 2) + dimCyan("│"));
-  const helpHint = `  ${dim("Type")} ${boldCyan("/help")} ${dim("for commands")}`;
-  const helpVisible = "  Type /help for commands".length;
-  const helpPad = Math.max(0, width - 2 - helpVisible);
-  console.log(dimCyan("  │") + helpHint + " ".repeat(helpPad) + dimCyan("│"));
-  console.log(dimCyan(`  ╰${line}╯`));
+  // ── Startup banner ──
+  console.log();
+  console.log(dimCyan("  ──────────────────────────────────────"));
+  console.log();
+  console.log(`  ${boldCyan("◆")} ${bold("Claude Code")} ${dim(`(${config.model})`)}`);
+  console.log();
+  console.log(`  ${dimCyan("│")} ${dim("Gateway")}   ${dim(config.apiUrl)}`);
+  console.log(`  ${dimCyan("│")} ${dim("cwd")}       ${dim(process.cwd())}`);
+  console.log(`  ${dimCyan("│")} ${dim("session")}   ${dim(session.getId())}`);
+  console.log(`  ${dimCyan("│")} ${dim("mode")}      ${dim(config.permissionMode)}`);
+  if (mcpMgr) {
+    const names = mcpMgr.getServerNames();
+    console.log(`  ${dimCyan("│")} ${dim("mcp")}       ${dim(names.join(", "))}`);
+  }
+  const customAgents = listCustomAgents();
+  if (customAgents.length > 0) {
+    console.log(`  ${dimCyan("│")} ${dim("agents")}    ${dim(customAgents.join(", "))}`);
+  }
+  if (resumeId && messages.length > 0) {
+    console.log(`  ${dimCyan("│")} ${dim("resumed")}   ${dim(`${resumeId} (${messages.length} messages)`)}`);
+  }
+  if (forkSessionId && messages.length > 0) {
+    console.log(`  ${dimCyan("│")} ${dim("forked")}    ${dim(`from ${forkSessionId} (${messages.length} messages)`)}`);
+  }
+  console.log();
+  console.log(`  ${dim("Type")} ${boldCyan("/help")} ${dim("for commands")}`);
+  console.log(dimCyan("  ──────────────────────────────────────"));
   console.log();
 
-  statusBar.init(config.model, session.getId());
+  statusBar.init(config.model, session.getId(), config.permissionMode);
+    if (settings.statusBar?.fields) {
+      statusBar.setFields(settings.statusBar.fields);
+    }
+
+  const MODES: PermissionMode[] = ["default", "auto", "plan"];
+  reader.setShiftTabHandler(() => {
+    const current = permissionManager.getMode();
+    const nextIdx = (MODES.indexOf(current) + 1) % MODES.length;
+    const next = MODES[nextIdx];
+    permissionManager.setMode(next);
+    config.permissionMode = next;
+    statusBar.updateMode(next);
+  });
+
+  reader.setCtrlOHandler(() => {
+    const verbose = toggleVerbose();
+    statusBar.updateVerbose(verbose);
+  });
 
   const promptStr = `${boldCyan("❯")} `;
 
@@ -167,8 +325,45 @@ async function main(): Promise<void> {
     // ── Slash commands ──
     if (trimmed === "/exit" || trimmed === "/quit") break;
 
+    if (trimmed.startsWith("/btw ")) {
+      const question = trimmed.slice(5).trim();
+      if (!question) {
+        console.log(dim("  Usage: /btw <question>\n"));
+        continue;
+      }
+
+      const sysPrompt = await buildSystemPrompt();
+      const sideBody: Record<string, unknown> = {
+        model: config.model,
+        messages: [{ role: "user", content: question }],
+        max_tokens: 4096,
+        system: sysPrompt,
+      };
+
+      process.stderr.write(`\n${dim("  (side question)")}\n\n`);
+
+      try {
+        const md = new MarkdownRenderer();
+        for await (const event of streamRequest(config, sideBody)) {
+          const type = event.type as string;
+          if (type === "content_block_delta") {
+            const delta = event.delta as Record<string, unknown>;
+            if (delta.type === "text_delta") {
+              md.write(delta.text as string);
+            }
+          }
+        }
+        md.flush();
+      } catch (err) {
+        console.error(red(`  ${err instanceof Error ? err.message : String(err)}`));
+      }
+      console.log();
+      continue;
+    }
+
     if (trimmed === "/clear") {
       messages.length = 0;
+      taskStore.clear();
       console.log(dim("  Conversation cleared.\n"));
       continue;
     }
@@ -194,11 +389,64 @@ async function main(): Promise<void> {
 
     if (trimmed === "/cost") {
       const totalK = ((sessionUsage.inputTokens + sessionUsage.outputTokens) / 1000).toFixed(1);
+      const cost = estimateCost(config.model, sessionUsage.inputTokens, sessionUsage.outputTokens);
       console.log(`
   ${bold("Session usage:")}
-    Input:  ${sessionUsage.inputTokens.toLocaleString()} tokens
-    Output: ${sessionUsage.outputTokens.toLocaleString()} tokens
-    Total:  ${totalK}k tokens
+    Input:  ${sessionUsage.inputTokens.toLocaleString()} tokens${cost ? `  (${formatUSD(cost.input)})` : ""}
+    Output: ${sessionUsage.outputTokens.toLocaleString()} tokens${cost ? `  (${formatUSD(cost.output)})` : ""}
+    Total:  ${totalK}k tokens${cost ? `  ${bold(formatUSD(cost.total))}` : ""}
+    Model:  ${config.model}${!cost ? dim("  (pricing unavailable)") : ""}
+`);
+      continue;
+    }
+
+    if (trimmed === "/context") {
+      const sysPrompt = await buildSystemPrompt();
+      const sysTokens = Math.ceil(sysPrompt.length / 4);
+      let userTextTokens = 0;
+      let assistantTextTokens = 0;
+      let toolCallTokens = 0;
+      let toolResultTokens = 0;
+
+      for (const msg of messages) {
+        if (typeof msg.content === "string") {
+          const t = Math.ceil(msg.content.length / 4);
+          if (msg.role === "user") userTextTokens += t;
+          else assistantTextTokens += t;
+        } else {
+          for (const block of msg.content) {
+            if (block.type === "text") {
+              const t = Math.ceil((block.text?.length ?? 0) / 4);
+              if (msg.role === "assistant") assistantTextTokens += t;
+              else userTextTokens += t;
+            } else if (block.type === "tool_use") {
+              toolCallTokens += Math.ceil((JSON.stringify(block.input ?? {}).length + (block.name?.length ?? 0)) / 4);
+            } else if (block.type === "tool_result") {
+              toolResultTokens += Math.ceil((block.content?.length ?? 0) / 4);
+            }
+          }
+        }
+      }
+
+      const capacity = getContextLimit(config.model);
+      const total = sysTokens + userTextTokens + assistantTextTokens + toolCallTokens + toolResultTokens;
+      const remaining = Math.max(0, capacity - total);
+      const barWidth = 30;
+      const bar = (tokens: number) => "\u2588".repeat(Math.round((tokens / capacity) * barWidth));
+      const pct = (tokens: number) => ((tokens / capacity) * 100).toFixed(1) + "%";
+      const fmtK = (n: number) => (n / 1000).toFixed(1) + "k";
+
+      console.log(`
+  ${bold("Context window:")}  ${fmtK(total)} / ${fmtK(capacity)} tokens (${pct(total)} used)
+
+    ${magenta("System prompt")}    ${fmtK(sysTokens).padStart(7)}  ${pct(sysTokens).padStart(6)}  ${magenta(bar(sysTokens))}
+    ${cyan("User messages")}    ${fmtK(userTextTokens).padStart(7)}  ${pct(userTextTokens).padStart(6)}  ${cyan(bar(userTextTokens))}
+    ${green("Assistant text")}   ${fmtK(assistantTextTokens).padStart(7)}  ${pct(assistantTextTokens).padStart(6)}  ${green(bar(assistantTextTokens))}
+    ${yellow("Tool calls")}       ${fmtK(toolCallTokens).padStart(7)}  ${pct(toolCallTokens).padStart(6)}  ${yellow(bar(toolCallTokens))}
+    ${blue("Tool results")}     ${fmtK(toolResultTokens).padStart(7)}  ${pct(toolResultTokens).padStart(6)}  ${blue(bar(toolResultTokens))}
+    ${dim("Remaining")}        ${fmtK(remaining).padStart(7)}  ${pct(remaining).padStart(6)}  ${dim("\u2591".repeat(Math.round((remaining / capacity) * barWidth)))}
+
+    Messages: ${messages.length}  \u2502  Auto-compact at: ${fmtK(capacity * 0.85)}
 `);
       continue;
     }
@@ -233,8 +481,18 @@ async function main(): Promise<void> {
       console.log(`    thinkingBudget:  ${s.thinkingBudget ?? dim("0")}`);
       console.log(`    allowRules:      ${s.allowRules?.length ? s.allowRules.join(", ") : dim("(none)")}`);
       console.log(`    allowOutsideCwd: ${s.allowOutsideCwd ?? dim("false")}`);
+      console.log(`    denyRules:       ${s.denyRules?.length ? s.denyRules.join(", ") : dim("(none)")}`);
       console.log(`    hooks:           ${s.hooks ? `pre:${s.hooks.pre?.length ?? 0} post:${s.hooks.post?.length ?? 0}` : dim("(none)")}`);
+      console.log(`    mcpServers:      ${s.mcpServers ? Object.keys(s.mcpServers).join(", ") : dim("(none)")}`);
+      console.log(`    theme:           ${getTheme()}`);
       console.log();
+      continue;
+    }
+
+    if (trimmed === "/doctor") {
+      const { runDoctor } = await import("./doctor.js");
+      const result = await runDoctor(config.apiUrl, config.apiKey);
+      process.stderr.write(result + "\n");
       continue;
     }
 
@@ -262,10 +520,15 @@ async function main(): Promise<void> {
         messages.push({ role: "user", content: reviewPrompt });
         console.log();
         const abort = new AbortController();
-        const onSigint = () => abort.abort();
-        process.on("SIGINT", onSigint);
+        checkpointManager.begin(messages.length - 1);
+        let rollbackRequested = false;
+        const escHandler = withEscapeInterrupt(abort, () => {
+          rollbackRequested = true;
+          abort.abort();
+        });
+        escapeControl = escHandler;
         try {
-          const turnUsage = await runAgentLoop(config, messages, permissionManager, abort.signal, settings.hooks);
+          const turnUsage = await runAgentLoop(config, messages, permissionManager, abort.signal, settings.hooks, checkpointManager);
           sessionUsage.inputTokens += turnUsage.inputTokens;
           sessionUsage.outputTokens += turnUsage.outputTokens;
           statusBar.update(sessionUsage);
@@ -275,10 +538,25 @@ async function main(): Promise<void> {
           } else {
             console.error(red(`\nError: ${err instanceof Error ? err.message : err}`));
           }
-          while (messages.length > 0 && messages[messages.length - 1].role === "assistant") messages.pop();
-          messages.pop();
+          if (!rollbackRequested) {
+            while (messages.length > 0 && messages[messages.length - 1].role === "assistant") messages.pop();
+            messages.pop();
+          }
         } finally {
-          process.removeListener("SIGINT", onSigint);
+          escapeControl = null;
+          escHandler.cleanup();
+        }
+        if (rollbackRequested && checkpointManager.getModifiedFiles().length > 0) {
+          const confirmed = await promptRollback(checkpointManager);
+          if (confirmed) {
+            const restored = await checkpointManager.rollback();
+            messages.length = checkpointManager.getMessageCountBefore();
+            process.stderr.write(dim(`  Rolled back ${restored.length} file(s).\n`));
+          } else {
+            checkpointManager.commit();
+          }
+        } else {
+          checkpointManager.commit();
         }
         await session.save(messages, sessionUsage).catch(() => {});
         console.log();
@@ -293,6 +571,22 @@ async function main(): Promise<void> {
         console.log(dim(`  Created ${filePath}\n`));
       } catch (err) {
         console.error(red(`  ${err instanceof Error ? err.message : err}\n`));
+      }
+      continue;
+    }
+
+    if (trimmed.startsWith("/theme")) {
+      const newTheme = trimmed.slice(7).trim();
+      if (newTheme) {
+        const validThemes: Theme[] = ["default", "minimal", "plain"];
+        if (validThemes.includes(newTheme as Theme)) {
+          setTheme(newTheme as Theme);
+          console.log(dim(`  Theme set to: ${newTheme}\n`));
+        } else {
+          console.log(red(`  Unknown theme: ${newTheme}. Options: default, minimal, plain\n`));
+        }
+      } else {
+        console.log(dim(`  Current theme: ${getTheme()}\n`));
       }
       continue;
     }
@@ -312,39 +606,87 @@ async function main(): Promise<void> {
     if (trimmed === "/help") {
       console.log(`
   ${bold("Commands:")}
-    /clear      Reset conversation
-    /commit     Generate commit message and commit
-    /compact    Compress conversation context
-    /cost       Show token usage
-    /init       Generate CLAUDE.md for this project
-    /model [m]  Show or switch model
-    /pr         Generate and create pull request
-    /review     Code review current changes
-    /sessions   List saved sessions
-    /settings   Show config file
-    /exit       Quit
-    /help       Show this help
+    /btw <q>      Quick side question (won't affect conversation)
+    /clear        Reset conversation
+    /commit       Generate commit message and commit
+    /compact      Compress conversation context
+    /context      Show context window usage
+    /cost         Show token usage and cost
+    /doctor       System health check
+    /init         Generate CLAUDE.md for this project
+    /model [m]    Show or switch model
+    /pr           Generate and create pull request
+    /review       Code review current changes
+    /sessions     List saved sessions
+    /settings     Show config file
+    /theme [name] Switch theme (default, minimal, plain)
+    /exit         Quit
+    /help         Show this help
 
   ${bold("Input:")}
-    \\          Line continuation (backslash at end)
-    Ctrl+C     Cancel input / interrupt running request
-    Up/Down    Command history
+    Enter               Submit message
+    Ctrl+J / Shift+Enter New line
+    Escape              Interrupt generation
+    Esc-Esc             Rollback file changes (double-tap)
+    Ctrl+C              Cancel / interrupt
+    Up/Down             History (single line) / navigate lines
+    Ctrl+A / Home       Line start
+    Ctrl+E / End        Line end
+    Ctrl+W              Delete word backward
+    Ctrl+K              Clear to end of line
+    Ctrl+U              Clear to start of line
+    Ctrl+R              Search history
+    Ctrl+L              Clear screen
+    Ctrl+Left/Right     Word jump
+    Ctrl+O              Toggle verbose tool output
+    Ctrl+Y              Yank (paste last kill)
+    Shift+Tab           Cycle permission mode
+    @file + Tab         File path completion
+
+  ${bold("Shell:")}
+    !command      Run shell command directly
 `);
       continue;
     }
 
-    // ── Send message (with optional image detection) ──
-    const userContent = await parseInputWithImages(trimmed);
+    // ── Shell escape: !command ──
+    if (trimmed.startsWith("!")) {
+      const shellCmd = trimmed.slice(1).trim();
+      if (shellCmd) {
+        try {
+          const { execSync } = await import("node:child_process");
+          execSync(shellCmd, {
+          cwd: process.cwd(),
+          stdio: "inherit",
+          shell: process.platform === "win32" ? "bash" : "/bin/bash",
+          timeout: 120_000,
+        });
+        } catch {
+          // execSync with stdio: "inherit" already displayed output
+        }
+        console.log();
+      }
+      continue;
+    }
+
+    // ── Resolve @file references and send message ──
+    const resolved = await resolveFileReferences(trimmed, process.cwd());
+    const userContent = await parseInputWithImages(resolved);
     messages.push({ role: "user", content: userContent });
 
     console.log(); // blank line before response
 
     const abort = new AbortController();
-    const onSigint = () => abort.abort();
-    process.on("SIGINT", onSigint);
+    checkpointManager.begin(messages.length - 1);
+    let rollbackRequested = false;
+    const escHandler = withEscapeInterrupt(abort, () => {
+      rollbackRequested = true;
+      abort.abort();
+    });
+    escapeControl = escHandler;
 
     try {
-      const turnUsage = await runAgentLoop(config, messages, permissionManager, abort.signal, settings.hooks);
+      const turnUsage = await runAgentLoop(config, messages, permissionManager, abort.signal, settings.hooks, checkpointManager);
       sessionUsage.inputTokens += turnUsage.inputTokens;
       sessionUsage.outputTokens += turnUsage.outputTokens;
       statusBar.update(sessionUsage);
@@ -354,19 +696,40 @@ async function main(): Promise<void> {
       } else {
         console.error(red(`\nError: ${err instanceof Error ? err.message : err}`));
       }
-      // Remove partial assistant + failed user message
-      while (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
+      if (!rollbackRequested) {
+        while (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
+          messages.pop();
+        }
         messages.pop();
       }
-      messages.pop();
     } finally {
-      process.removeListener("SIGINT", onSigint);
+      escapeControl = null;
+      escHandler.cleanup();
+    }
+
+    // Handle Esc-Esc rollback
+    if (rollbackRequested && checkpointManager.getModifiedFiles().length > 0) {
+      const confirmed = await promptRollback(checkpointManager);
+      if (confirmed) {
+        const restored = await checkpointManager.rollback();
+        messages.length = checkpointManager.getMessageCountBefore();
+        process.stderr.write(dim(`  Rolled back ${restored.length} file(s).\n`));
+      } else {
+        checkpointManager.commit();
+      }
+    } else {
+      checkpointManager.commit();
     }
 
     // Auto-save after each turn
     await session.save(messages, sessionUsage).catch(() => {});
 
     console.log(); // blank line after response
+  }
+
+  // Shutdown MCP servers
+  if (mcpMgr) {
+    await mcpMgr.stopAll();
   }
 
   // Save on exit

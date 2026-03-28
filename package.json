@@ -1,8 +1,6 @@
 {
-  "name": "c2a",
-  "version": "0.1.0",
-  "private": true,
-  "description": "A Claude Code clone CLI — agentic coding assistant in your terminal",
+  "name": "@claude2api/cli",
+  "version": "0.0.1",
   "type": "module",
   "bin": {
     "c2a": "./dist/index.js"
