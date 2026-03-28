@@ -26,7 +26,25 @@ export interface ContentBlock {
     media_type: "image/jpeg" | "image/png" | "image/gif" | "image/webp";
     data: string;
   };
-  cache_control?: { type: "ephemeral" };
+  cache_control?: CacheControl;
+}
+
+export interface CacheControl {
+  type: "ephemeral";
+  scope?: "global" | "org";
+}
+
+export interface SystemPromptBlock {
+  type: "text";
+  text: string;
+  cache_control?: CacheControl;
+}
+
+export interface SystemPromptSection {
+  name: string;
+  cacheBreak: boolean;
+  scope?: "global" | "org";
+  compute: () => Promise<string | null>;
 }
 
 export interface Message {

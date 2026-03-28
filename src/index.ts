@@ -21,6 +21,7 @@ import { parseInputWithImages } from "./ui/image.js";
 import { StatusBar } from "./ui/statusbar.js";
 import { FileCompleter, resolveFileReferences } from "./ui/file-completions.js";
 import { CheckpointManager } from "./tools/checkpoint.js";
+import { SectionCache } from "./core/section-cache.js";
 import { stdin } from "node:process";
 import type { ApiFormat, Config, Message, PermissionMode, UsageStats } from "./types.js";
 
@@ -214,6 +215,7 @@ async function main(): Promise<void> {
   const reader = new InputReader();
   const messages: Message[] = [];
   const sessionUsage: UsageStats = { inputTokens: 0, outputTokens: 0 };
+  const sectionCache = new SectionCache();
   let session = new SessionManager(config.model);
   const statusBar = new StatusBar();
   const checkpointManager = new CheckpointManager();
@@ -364,6 +366,7 @@ async function main(): Promise<void> {
     if (trimmed === "/clear") {
       messages.length = 0;
       taskStore.clear();
+      sectionCache.clear();
       console.log(dim("  Conversation cleared.\n"));
       continue;
     }
@@ -528,7 +531,7 @@ async function main(): Promise<void> {
         });
         escapeControl = escHandler;
         try {
-          const turnUsage = await runAgentLoop(config, messages, permissionManager, abort.signal, settings.hooks, checkpointManager);
+          const turnUsage = await runAgentLoop(config, messages, permissionManager, abort.signal, settings.hooks, checkpointManager, sectionCache);
           sessionUsage.inputTokens += turnUsage.inputTokens;
           sessionUsage.outputTokens += turnUsage.outputTokens;
           statusBar.update(sessionUsage);
@@ -686,7 +689,7 @@ async function main(): Promise<void> {
     escapeControl = escHandler;
 
     try {
-      const turnUsage = await runAgentLoop(config, messages, permissionManager, abort.signal, settings.hooks, checkpointManager);
+      const turnUsage = await runAgentLoop(config, messages, permissionManager, abort.signal, settings.hooks, checkpointManager, sectionCache);
       sessionUsage.inputTokens += turnUsage.inputTokens;
       sessionUsage.outputTokens += turnUsage.outputTokens;
       statusBar.update(sessionUsage);

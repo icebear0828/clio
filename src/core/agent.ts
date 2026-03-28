@@ -4,7 +4,8 @@ import { executeTool, TOOL_DEFINITIONS } from "../tools/index.js";
 import { getMcpToolDefinitions } from "../tools/mcp.js";
 import { renderToolCall, renderToolResult, renderPermissionDenied, renderDiff, startSpinner, dim } from "../ui/render.js";
 import type { PermissionManager } from "./permissions.js";
-import { buildSystemPrompt } from "./context.js";
+import { buildSystemSections } from "./system-prompt.js";
+import { SectionCache } from "./section-cache.js";
 import { MarkdownRenderer } from "../ui/markdown.js";
 import { runHooks, type HooksConfig } from "../tools/hooks.js";
 import type { Config, ContentBlock, Message, UsageStats } from "../types.js";
@@ -52,13 +53,13 @@ export async function runAgentLoop(
   signal?: AbortSignal,
   hooks?: HooksConfig,
   checkpointManager?: CheckpointManager,
+  sectionCache?: SectionCache,
 ): Promise<UsageStats> {
   let iteration = 0;
   const MAX_ITERATIONS = 25;
   const usage: UsageStats = { inputTokens: 0, outputTokens: 0 };
 
-  const systemText = await buildSystemPrompt();
-  const system = [{ type: "text", text: systemText, cache_control: { type: "ephemeral" as const } }];
+  const cache = sectionCache ?? new SectionCache();
 
   const allTools = [...TOOL_DEFINITIONS, ...getMcpToolDefinitions()];
   const tools = allTools.map((t, i, arr) =>
@@ -80,6 +81,8 @@ export async function runAgentLoop(
         // compact failed — proceed anyway, API will truncate if needed
       }
     }
+
+    const system = await buildSystemSections(cache);
 
     const body: Record<string, unknown> = {
       model: config.model,

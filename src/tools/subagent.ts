@@ -1,5 +1,5 @@
 import { streamRequest } from "../core/client.js";
-import { buildSystemPrompt } from "../core/context.js";
+import { getSubAgentSystemPrompt } from "../core/system-prompt.js";
 import { TOOL_DEFINITIONS, executeTool } from "./index.js";
 import { getMcpToolDefinitions } from "./mcp.js";
 import type { Config, ContentBlock, Message } from "../types.js";
@@ -37,7 +37,7 @@ export async function executeSubAgent(
   try {
   const messages: Message[] = [{ role: "user", content: prompt }];
 
-  const systemText = options?.systemPromptOverride ?? await buildSystemPrompt();
+  const systemText = options?.systemPromptOverride ?? getSubAgentSystemPrompt();
   const system = [
     {
       type: "text",

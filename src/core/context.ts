@@ -37,7 +37,7 @@ async function findClaudeMdFiles(cwd: string): Promise<string[]> {
 /**
  * Load and concatenate all CLAUDE.md content.
  */
-async function loadClaudeMd(cwd: string): Promise<string | null> {
+export async function loadClaudeMd(cwd: string): Promise<string | null> {
   const files = await findClaudeMdFiles(cwd);
   if (files.length === 0) return null;
 
@@ -61,7 +61,7 @@ async function loadClaudeMd(cwd: string): Promise<string | null> {
  * Collect git context: branch, status, recent commits.
  * Returns null if not in a git repo.
  */
-async function loadGitContext(cwd: string): Promise<string | null> {
+export async function loadGitContext(cwd: string): Promise<string | null> {
   try {
     const run = (cmd: string) =>
       execAsync(cmd, { cwd, timeout: 5000 }).then((r) => r.stdout.trim());
@@ -94,12 +94,11 @@ async function loadGitContext(cwd: string): Promise<string | null> {
 }
 
 /**
- * Build the full system prompt with environment, CLAUDE.md, and git context.
+ * Environment info section.
  */
-export async function buildSystemPrompt(): Promise<string> {
+export function getEnvironmentInfo(): Promise<string | null> {
   const cwd = process.cwd();
-
-  const sections: string[] = [
+  return Promise.resolve(
     [
       "# Environment",
       `- Working directory: ${cwd}`,
@@ -107,13 +106,25 @@ export async function buildSystemPrompt(): Promise<string> {
       `- Shell: bash`,
       `- User: ${os.userInfo().username}`,
     ].join("\n"),
-  ];
+  );
+}
 
-  const [claudeMd, gitCtx] = await Promise.all([
+/**
+ * Build the full system prompt with environment, CLAUDE.md, and git context.
+ * Kept for backward compatibility (/btw, /context, etc.)
+ */
+export async function buildSystemPrompt(): Promise<string> {
+  const cwd = process.cwd();
+
+  const sections: string[] = [];
+
+  const [env, claudeMd, gitCtx] = await Promise.all([
+    getEnvironmentInfo(),
     loadClaudeMd(cwd),
     loadGitContext(cwd),
   ]);
 
+  if (env) sections.push(env);
   if (gitCtx) sections.push(gitCtx);
   if (claudeMd) sections.push(claudeMd);
 
