@@ -20,10 +20,12 @@ const projectRoot = resolve(__dirname, "..");
 const args = process.argv.slice(2);
 let RUNS = 3;
 let taskFilter = null;
+let clioApiFormat = "anthropic";
 
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "--runs" && args[i + 1]) RUNS = parseInt(args[++i], 10);
   if (args[i] === "--tasks" && args[i + 1]) taskFilter = args[++i].split(",");
+  if (args[i] === "--clio-format" && args[i + 1]) clioApiFormat = args[++i];
 }
 
 // ── Task definitions ──
@@ -79,7 +81,7 @@ function runClio(prompt) {
   const start = performance.now();
   try {
     const out = execSync(
-      `node dist/index.js -p ${shellQuote(prompt)} --output-format json --api-format openai`,
+      `node dist/index.js -p ${shellQuote(prompt)} --output-format json --api-format ${clioApiFormat}`,
       { cwd: projectRoot, timeout: 120_000, env: { ...process.env }, stdio: ["pipe", "pipe", "pipe"] },
     );
     return parseRun(out, performance.now() - start);
@@ -127,6 +129,7 @@ console.log(`\n╔════════════════════�
 console.log(`║       A/B Benchmark: Clio vs Claude Code          ║`);
 console.log(`╚════════════════════════════════════════════════════╝\n`);
 console.log(`  Runs per task: ${RUNS}`);
+console.log(`  Clio API format: ${clioApiFormat}`);
 console.log(`  Tasks: ${activeTasks.map((t) => t.id).join(", ")}`);
 console.log(`  CWD: ${projectRoot}\n`);
 

@@ -2,7 +2,7 @@
 
 A feature-rich Claude Code clone that runs in your terminal. Connects to the Anthropic API (or any compatible endpoint) and provides an interactive agentic coding assistant with local tool execution.
 
-28 source files, ~5900 lines of TypeScript. Zero external runtime dependencies beyond `fast-glob`.
+46 source files, ~9200 lines of TypeScript. Zero external runtime dependencies beyond `fast-glob`.
 
 ## Quick Start
 
@@ -25,11 +25,11 @@ node dist/index.js
 ## Features
 
 - **Agent Loop** — Multi-turn tool calling: Claude reads files, writes code, runs commands, iterates until done
-- **16 Tools** — Read, Write, Edit, Bash, Glob, Grep, WebFetch, WebSearch, Agent, AskUserQuestion, EnterPlanMode, ExitPlanMode, TaskCreate/Update/List/Get
+- **21 Tools** — Read, Write, Edit, Bash, Glob, Grep, WebFetch, WebSearch, Agent, AskUserQuestion, EnterPlanMode, ExitPlanMode, TaskCreate/Update/List/Get, Skill, ToolSearch, TeamCreate/Delete, SendMessage
 - **Streaming** — Real-time markdown rendering with syntax-highlighted code blocks, headers, lists, inline formatting
 - **Prompt Caching** — `cache_control` on system prompt, tools, and message history for ~90% input token savings
 - **Model-aware Context** — Dynamic context limits per model (opus 1M, sonnet/haiku 200k), auto-compact at 85%
-- **Permissions** — Three modes (default/auto/plan), Y/n/a prompts, regex allow + deny rules, auto classifier, Shift+Tab to cycle
+- **Permissions** — Three modes (default/auto/plan), Y/n/a prompts, regex allow + deny rules, two-stage auto classifier (pattern + LLM), Shift+Tab to cycle
 - **Context** — Auto-loads CLAUDE.md files (upward traversal) + git branch/status/commits into system prompt
 - **Sessions** — Auto-save conversations, resume with `--resume <id>`, fork with `--fork-session <id>`
 - **Git Workflow** — `/commit`, `/pr`, `/review` commands with AI-generated messages
@@ -37,9 +37,14 @@ node dist/index.js
 - **Custom Agents** — Define agents in `.clio/agents/*.md` with front-matter (tools, model, max_iterations)
 - **Background Agents** — `run_in_background` for async sub-agent execution with completion notifications
 - **Worktree Isolation** — Run sub-agents in isolated git worktrees
-- **Extended Thinking** — Show Claude's reasoning process with `--thinking`
+- **Agent Teams** — TeamCreate/TeamDelete/SendMessage for inter-agent messaging and collaboration
+- **Extended Thinking** — Show Claude's reasoning process with `--thinking`, adaptive thinking budget
 - **Image Input** — Paste image file paths to send screenshots to Claude
 - **Hooks** — Pre/post tool execution hooks via settings.json with env vars and tool filtering
+- **Plugin System** — Manifest-driven plugins (plugin.json) supporting skills, agents, hooks, MCP, LSP, commands injection
+- **LSP Integration** — LspClient/LspManager with Content-Length framing, diagnostics injected into system prompt
+- **Skills** — Skill/ToolSearch tools for deferred tool loading and built-in skill execution
+- **Sandboxing** — Path restrictions, env filtering, network control, resource limits
 - **Status Bar** — Configurable bottom bar (model/tokens/cost/mode/verbose/session)
 - **Syntax Highlighting** — Language-aware coloring for TS/JS/Python/Rust/Go/Bash/JSON/CSS/HTML
 - **Undo/Redo** — Ctrl+Z / Ctrl+Shift+Z in input with snapshot-based undo stack
@@ -47,6 +52,8 @@ node dist/index.js
 - **Task Management** — TaskCreate/Update/List/Get for tracking multi-step workflows
 - **Smart Truncation** — Grep pagination (head_limit/offset), Bash output capped at 500 lines, Glob pagination
 - **Cost Tracking** — `/cost` command + status bar with per-model USD pricing
+- **Print Mode** — Non-interactive output with `-p` flag, JSON support
+- **Keybindings** — Customizable keyboard shortcuts via keybindings.json
 - **OpenAI Compatibility** — `--api-format openai` for any OpenAI-compatible endpoint
 
 ## Configuration
@@ -183,6 +190,11 @@ Arrays (`allowRules`, `denyRules`, `hooks.pre`, `hooks.post`) concatenate across
 | TaskUpdate | safe | Update task status or add progress note |
 | TaskList | safe | List all tasks with statuses |
 | TaskGet | safe | Get task details including progress messages |
+| Skill | safe | Execute a built-in or plugin skill |
+| ToolSearch | safe | Search and load deferred tool schemas on demand |
+| TeamCreate | safe | Create an agent team with named members |
+| TeamDelete | safe | Delete an agent team |
+| SendMessage | safe | Send a message to another agent in a team |
 | Write | write | Create/overwrite files (auto-creates parent dirs) |
 | Edit | write | Exact string replacement with uniqueness check |
 | Bash | dangerous | Execute shell commands (120s timeout, 10MB buffer, 500-line truncation) |
@@ -297,14 +309,24 @@ src/
 │   ├── permissions.ts        Permission system (3 modes, allow/deny rules, auto classifier)
 │   ├── pricing.ts            Per-model USD cost estimation
 │   ├── session.ts            Session persistence + fork (~/.clio/sessions/)
-│   └── settings.ts           4-level settings hierarchy + merge
+│   ├── settings.ts           4-level settings hierarchy + merge
+│   ├── system-prompt.ts      Section-based system prompt assembly (static + dynamic)
+│   ├── section-cache.ts      Session-level section caching for system prompt
+│   ├── billing.ts            Billing header generation (x-anthropic-billing-header)
+│   ├── prompts.ts            Prompt templates
+│   ├── normalize.ts          Message normalization (tool pairing, image/doc management)
+│   ├── adaptive-thinking.ts  Dynamic thinking budget adjustment
+│   ├── sandbox.ts            Sandboxing (path/env/network/resource restrictions)
+│   └── llm-classifier.ts     Two-stage auto classifier (pattern + LLM Haiku)
 ├── tools/
-│   ├── index.ts              16 tool definitions + local execution + truncation
+│   ├── index.ts              21 tool definitions + local execution + truncation
 │   ├── checkpoint.ts         File snapshot + rollback for Write/Edit
 │   ├── hooks.ts              Pre/post tool execution hooks
 │   ├── mcp.ts                MCP client (JSON-RPC 2.0 over stdio)
+│   ├── lsp.ts                LSP client/manager (Content-Length framing, diagnostics)
 │   ├── subagent.ts           Sub-agent execution with iteration limit
 │   ├── tasks.ts              Task store for progress tracking
+│   ├── teams.ts              Agent teams (TeamCreate/Delete/SendMessage)
 │   └── worktree.ts           Git worktree create/cleanup for isolated agents
 ├── ui/
 │   ├── render.ts             ANSI colors, spinner, diff display, tool-specific rendering
@@ -313,13 +335,27 @@ src/
 │   ├── highlight.ts          Syntax highlighting (10 languages)
 │   ├── statusbar.ts          Configurable bottom status bar
 │   ├── image.ts              Image file detection + base64 encoding
+│   ├── keybindings.ts        Customizable keyboard shortcuts
 │   └── file-completions.ts   @file Tab completion (fast-glob scan)
+├── plugins/
+│   ├── types.ts              Plugin type definitions
+│   ├── manifest.ts           plugin.json schema and validation
+│   ├── loader.ts             Plugin discovery and loading
+│   └── index.ts              Plugin system entry point
+├── skills/
+│   ├── index.ts              Skills system entry point
+│   ├── loader.ts             Skill discovery and loading
+│   └── builtins/index.ts     Built-in skill definitions
 └── commands/
     ├── git-commands.ts        /commit, /pr, /review implementations
     ├── doctor.ts              /doctor system health checks
     ├── init.ts                CLAUDE.md generation from project scan
     └── custom-agents.ts       .clio/agents/*.md loader with front-matter parsing
 ```
+
+## Benchmark
+
+See [A/B Benchmark: Clio vs Claude Code](benchmark/REPORT.md) for a detailed comparison of latency, token usage, cache efficiency, and correctness across 5 task types.
 
 ## License
 
