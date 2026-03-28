@@ -1,9 +1,19 @@
 import { streamRequest } from "./client.js";
 import { buildSystemPrompt } from "./context.js";
 import { TOOL_DEFINITIONS, executeTool } from "./tools.js";
+import { getMcpToolDefinitions } from "./mcp.js";
 import type { Config, ContentBlock, Message } from "./types.js";
 
 const MAX_ITERATIONS = 15;
+
+export interface SubAgentOptions {
+  systemPromptOverride?: string;
+  allowedTools?: string[];
+  model?: string;
+  maxIterations?: number;
+  workdir?: string;
+  signal?: AbortSignal;
+}
 
 interface StreamedBlock {
   type: string;
@@ -16,11 +26,18 @@ interface StreamedBlock {
 export async function executeSubAgent(
   config: Config,
   prompt: string,
-  signal?: AbortSignal
+  options?: SubAgentOptions,
 ): Promise<string> {
+  const signal = options?.signal;
+  const maxIter = options?.maxIterations ?? MAX_ITERATIONS;
+
+  const originalCwd = process.cwd();
+  if (options?.workdir) process.chdir(options.workdir);
+
+  try {
   const messages: Message[] = [{ role: "user", content: prompt }];
 
-  const systemText = await buildSystemPrompt();
+  const systemText = options?.systemPromptOverride ?? await buildSystemPrompt();
   const system = [
     {
       type: "text",
@@ -29,22 +46,25 @@ export async function executeSubAgent(
     },
   ];
 
-  // Use all tools except Agent itself to prevent recursive spawning
-  const tools = TOOL_DEFINITIONS
-    .filter((t) => t.name !== "Agent")
-    .map((t, i, arr) =>
-      i === arr.length - 1
-        ? { ...t, cache_control: { type: "ephemeral" as const } }
-        : t
-    );
+  const SUBAGENT_EXCLUDED = new Set(["Agent", "AskUserQuestion", "EnterPlanMode", "ExitPlanMode"]);
+  const allowedSet = options?.allowedTools ? new Set(options.allowedTools) : null;
+  const allTools = [
+    ...TOOL_DEFINITIONS.filter((t) => !SUBAGENT_EXCLUDED.has(t.name) && (!allowedSet || allowedSet.has(t.name))),
+    ...getMcpToolDefinitions(),
+  ];
+  const tools = allTools.map((t, i, arr) =>
+    i === arr.length - 1
+      ? { ...t, cache_control: { type: "ephemeral" as const } }
+      : t
+  );
 
   let iteration = 0;
 
-  while (iteration++ < MAX_ITERATIONS) {
+  while (iteration++ < maxIter) {
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
 
     const body: Record<string, unknown> = {
-      model: config.model,
+      model: options?.model ?? config.model,
       messages,
       max_tokens: config.thinkingBudget > 0 ? config.thinkingBudget + 16384 : 16384,
       tools,
@@ -177,4 +197,8 @@ export async function executeSubAgent(
     if (texts.length > 0) return texts.join("\n");
   }
   return "(sub-agent reached max iterations)";
+
+  } finally {
+    if (options?.workdir) process.chdir(originalCwd);
+  }
 }
