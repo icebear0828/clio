@@ -214,6 +214,10 @@ export async function runAgentLoop(
         stopReason = delta.stop_reason as string;
         const u = event.usage as Record<string, number> | undefined;
         if (u?.output_tokens) usage.outputTokens += u.output_tokens;
+        // Some proxies report input/cache tokens in message_delta instead of message_start
+        if (u?.input_tokens) usage.inputTokens += u.input_tokens;
+        if (u?.cache_creation_input_tokens) usage.cacheCreationInputTokens += u.cache_creation_input_tokens;
+        if (u?.cache_read_input_tokens) usage.cacheReadInputTokens += u.cache_read_input_tokens;
       }
     }
 
