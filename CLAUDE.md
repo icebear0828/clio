@@ -119,6 +119,21 @@ This project is designed to be modified by Clio itself (dogfooding). Hooks in `.
 - **Build verification**: after a complex change, run `npm run build && npm run dev -- --version` to verify the CLI still starts.
 - **Scope discipline**: change one module at a time. Verify tsc+tests pass before moving to the next module.
 
+### Git workflow (autonomous)
+After completing a change with tsc+tests green:
+1. `git checkout -b feat/<short-description>` — create feature branch
+2. `git add <specific files>` — stage only changed files, never `git add -A`
+3. `git commit -m "type: description"` — conventional commit message in English
+4. `git push -u origin feat/<short-description>`
+5. `gh pr create --title "..." --body "..."` — create PR against master
+6. **Self-review via sub-agent**: spawn a sub-agent with the Agent tool to review the PR:
+   - Prompt: `Review PR #<number> in this repo. Run "gh pr diff <number>" to read the changes. Check for: type errors, logic bugs, security issues, missing tests, style violations. If the PR is acceptable, run "gh pr review <number> --approve". If not, run "gh pr review <number> --request-changes --body '<issues>'" and report back.`
+   - Agent type: `general-purpose`
+7. If review agent approves → `gh pr merge <number> --squash --delete-branch`
+8. If review agent requests changes → fix issues, push, re-request review
+
+**NEVER push directly to master or main. All changes go through PRs.**
+
 ### When adding a new module
 - Add the file under the appropriate directory (`core/`, `tools/`, `ui/`, etc.)
 - Export from the module, import with `.js` extension
