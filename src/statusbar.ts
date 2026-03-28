@@ -1,26 +1,30 @@
 import { dim, cyan } from "./render.js";
-import type { UsageStats } from "./types.js";
+import { estimateCost, formatUSD } from "./pricing.js";
+import type { PermissionMode, UsageStats } from "./types.js";
 
-/**
- * Bottom status bar — fixed at the last terminal line.
- * Uses ANSI scroll region to reserve the bottom row.
- */
+export type StatusBarField = "model" | "mode" | "cost" | "tokens" | "session" | "verbose";
+
+const DEFAULT_FIELDS: StatusBarField[] = ["model", "mode", "verbose", "cost", "tokens", "session"];
+
 export class StatusBar {
   private model = "";
   private sessionId = "";
+  private mode: PermissionMode = "default";
+  private verbose = false;
   private usage: UsageStats = { inputTokens: 0, outputTokens: 0 };
+  private fields: StatusBarField[] = DEFAULT_FIELDS;
   private enabled: boolean;
 
   constructor() {
-    const isWindows = process.platform === "win32";
-    this.enabled = process.stdout.isTTY === true && !process.env.NO_COLOR && !isWindows;
+    this.enabled = process.stdout.isTTY === true && !process.env.NO_COLOR;
   }
 
   /** Initialize scroll region (reserve bottom line). */
-  init(model: string, sessionId: string): void {
+  init(model: string, sessionId: string, mode?: PermissionMode): void {
     if (!this.enabled) return;
     this.model = model;
     this.sessionId = sessionId;
+    if (mode) this.mode = mode;
 
     const rows = process.stdout.rows ?? 24;
     // Set scroll region to rows-1, leaving last line for status
@@ -46,21 +50,62 @@ export class StatusBar {
     this.render();
   }
 
-  /** Render status bar at the bottom line. */
+  updateMode(mode: PermissionMode): void {
+    this.mode = mode;
+    this.render();
+  }
+
+  updateVerbose(verbose: boolean): void {
+    this.verbose = verbose;
+    this.render();
+  }
+
+  setFields(fields: StatusBarField[]): void {
+    this.fields = fields;
+    this.render();
+  }
+
   private render(): void {
     if (!this.enabled) return;
 
     const rows = process.stdout.rows ?? 24;
     const cols = process.stdout.columns ?? 80;
 
-    const totalK = ((this.usage.inputTokens + this.usage.outputTokens) / 1000).toFixed(1);
-    const left = ` ${this.model}`;
-    const right = `${totalK}k tokens  ${this.sessionId} `;
-    const padding = Math.max(0, cols - left.length - right.length);
+    const left: string[] = [];
+    const right: string[] = [];
 
-    const bar = dim(left + " ".repeat(padding) + right);
+    for (const field of this.fields) {
+      switch (field) {
+        case "model":
+          left.push(this.model);
+          break;
+        case "mode":
+          if (this.mode !== "default") left.push(`[${this.mode}]`);
+          break;
+        case "verbose":
+          if (this.verbose) left.push("[verbose]");
+          break;
+        case "cost": {
+          const cost = estimateCost(this.model, this.usage.inputTokens, this.usage.outputTokens);
+          if (cost) right.push(formatUSD(cost.total));
+          break;
+        }
+        case "tokens": {
+          const totalK = ((this.usage.inputTokens + this.usage.outputTokens) / 1000).toFixed(1);
+          right.push(`${totalK}k tokens`);
+          break;
+        }
+        case "session":
+          right.push(this.sessionId);
+          break;
+      }
+    }
 
-    // Save cursor, move to last row, clear line, write bar, restore cursor
+    const leftStr = ` ${left.join(" ")}`;
+    const rightStr = `${right.join("  ")} `;
+    const padding = Math.max(0, cols - leftStr.length - rightStr.length);
+    const bar = dim(leftStr + " ".repeat(padding) + rightStr);
+
     process.stderr.write(`\x1b7\x1b[${rows};1H\x1b[K${bar}\x1b8`);
   }
 

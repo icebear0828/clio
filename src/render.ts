@@ -6,8 +6,38 @@ let colorsEnabled =
   !process.env.NO_COLOR &&
   !process.argv.includes("--no-color");
 
+const defaultColorsEnabled = colorsEnabled;
+
 export function setColorsEnabled(enabled: boolean): void {
   colorsEnabled = enabled;
+}
+
+// ── Theme ──
+
+export type Theme = "default" | "minimal" | "plain";
+
+let currentTheme: Theme = "default";
+
+export function getTheme(): Theme {
+  return currentTheme;
+}
+
+export function setTheme(theme: Theme): void {
+  currentTheme = theme;
+  colorsEnabled = theme === "plain" ? false : defaultColorsEnabled;
+}
+
+// ── Verbose toggle ──
+
+let verboseOutput = false;
+
+export function isVerbose(): boolean {
+  return verboseOutput;
+}
+
+export function toggleVerbose(): boolean {
+  verboseOutput = !verboseOutput;
+  return verboseOutput;
 }
 
 const esc = (code: string) => (s: string) =>
@@ -54,32 +84,141 @@ export function startSpinner(message: string): () => void {
 }
 
 export function renderToolCall(name: string, input: Record<string, unknown>): void {
-  const params = Object.entries(input)
-    .filter(([, v]) => typeof v === "string" && (v as string).length < 120)
-    .map(([k, v]) => `${dim(k + "=")}${cyan(JSON.stringify(v))}`)
-    .join(" ");
+  let display: string;
 
-  process.stderr.write(`\n  ${boldMagenta("⚡")} ${bold(name)} ${params}\n`);
+  switch (name) {
+    case "Read": {
+      const fp = (input.file_path as string) ?? "";
+      const range = input.offset
+        ? ` ${dim(`(${input.offset}${input.limit ? `-${(input.offset as number) + (input.limit as number)}` : ""}`)}`
+        : "";
+      display = `${dim("Read")} ${cyan(fp)}${range}`;
+      break;
+    }
+    case "Bash": {
+      const cmd = (input.command as string) ?? "";
+      const truncated = cmd.length > 120 ? cmd.slice(0, 117) + "..." : cmd;
+      display = `${dim("$")} ${truncated}`;
+      break;
+    }
+    case "Edit": {
+      const fp = (input.file_path as string) ?? "";
+      display = `${dim("Edit")} ${cyan(fp)}`;
+      break;
+    }
+    case "Write": {
+      const fp = (input.file_path as string) ?? "";
+      display = `${dim("Write")} ${cyan(fp)}`;
+      break;
+    }
+    case "Glob": {
+      const pattern = (input.pattern as string) ?? "";
+      display = `${dim("Glob")} ${cyan(pattern)}`;
+      break;
+    }
+    case "Grep": {
+      const pattern = (input.pattern as string) ?? "";
+      const sp = input.path as string | undefined;
+      display = `${dim("Grep")} ${cyan(pattern)}${sp ? dim(` in ${sp}`) : ""}`;
+      break;
+    }
+    case "WebFetch": {
+      const url = (input.url as string) ?? "";
+      display = `${dim("Fetch")} ${cyan(url)}`;
+      break;
+    }
+    case "Agent": {
+      const desc = (input.description ?? input.prompt ?? "") as string;
+      const agentType = input.subagent_type as string | undefined;
+      const label = desc.length > 80 ? desc.slice(0, 77) + "..." : desc;
+      const prefix = agentType ? `Agent:${agentType}` : "Agent";
+      display = `${dim(prefix)} ${cyan(label)}`;
+      break;
+    }
+    case "WebSearch": {
+      display = `${dim("Search")} ${cyan((input.query as string) ?? "")}`;
+      break;
+    }
+    case "AskUserQuestion": {
+      const q = (input.question as string) ?? "";
+      display = `${dim("Ask")} ${cyan(q.length > 120 ? q.slice(0, 117) + "..." : q)}`;
+      break;
+    }
+    case "EnterPlanMode": {
+      display = `${dim("Mode")} ${cyan("entering plan mode")}`;
+      break;
+    }
+    case "ExitPlanMode": {
+      display = `${dim("Mode")} ${cyan("exiting plan mode")}`;
+      break;
+    }
+    case "TaskCreate": {
+      const desc = (input.description as string) ?? "";
+      const truncated = desc.length > 100 ? desc.slice(0, 97) + "..." : desc;
+      display = `${dim("Task")} ${cyan("+")} ${truncated}`;
+      break;
+    }
+    case "TaskUpdate": {
+      const id = (input.id as string) ?? "";
+      const status = input.status as string | undefined;
+      const parts = [id];
+      if (status) parts.push(`-> ${status}`);
+      display = `${dim("Task")} ${cyan(parts.join(" "))}`;
+      break;
+    }
+    case "TaskList": {
+      display = `${dim("Task")} ${cyan("list")}`;
+      break;
+    }
+    case "TaskGet": {
+      const id = (input.id as string) ?? "";
+      display = `${dim("Task")} ${cyan(id)}`;
+      break;
+    }
+    default: {
+      const params = Object.entries(input)
+        .filter(([, v]) => typeof v === "string" && (v as string).length < 120)
+        .map(([k, v]) => `${dim(k + "=")}${cyan(JSON.stringify(v))}`)
+        .join(" ");
+      display = `${boldMagenta("⚡")} ${bold(name)} ${params}`;
+    }
+  }
+
+  process.stderr.write(`\n  ${display}\n`);
 }
 
 export function renderToolResult(result: string, isError: boolean): void {
-  const lines = result.split("\n");
-  const MAX_LINES = 20;
-  const display = lines.length > MAX_LINES
-    ? [...lines.slice(0, MAX_LINES), dim(`  ... (${lines.length - MAX_LINES} more lines)`)]
-    : lines;
+  if (isError) {
+    const lines = result.split("\n");
+    const MAX_LINES = 20;
+    const display = lines.length > MAX_LINES
+      ? [...lines.slice(0, MAX_LINES), dim(`  ... (${lines.length - MAX_LINES} more lines)`)]
+      : lines;
 
-  const prefix = isError ? red("✗") : green("✓");
-  const colorFn = isError ? red : dim;
-
-  process.stderr.write(`  ${prefix} `);
-  if (display.length === 1) {
-    process.stderr.write(colorFn(display[0]) + "\n");
-  } else {
-    process.stderr.write("\n");
-    for (const line of display) {
-      process.stderr.write(`    ${colorFn(line)}\n`);
+    process.stderr.write(`  ${red("✗")} `);
+    if (display.length === 1) {
+      process.stderr.write(red(display[0]) + "\n");
+    } else {
+      process.stderr.write("\n");
+      for (const line of display) {
+        process.stderr.write(`    ${red(line)}\n`);
+      }
     }
+  } else if (verboseOutput) {
+    const lines = result.split("\n");
+    const MAX_VERBOSE = 100;
+    const display = lines.length > MAX_VERBOSE
+      ? [...lines.slice(0, MAX_VERBOSE), `  ... (${lines.length - MAX_VERBOSE} more lines)`]
+      : lines;
+    process.stderr.write(`  ${green("✓")}\n`);
+    for (const line of display) {
+      process.stderr.write(`    ${dim(line)}\n`);
+    }
+  } else {
+    const lines = result.split("\n");
+    const first = lines[0].length > 100 ? lines[0].slice(0, 97) + "..." : lines[0];
+    const suffix = lines.length > 1 ? dim(` (+${lines.length - 1} lines)`) : "";
+    process.stderr.write(`  ${green("✓")} ${dim(first)}${suffix}\n`);
   }
 }
 

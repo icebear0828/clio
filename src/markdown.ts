@@ -1,4 +1,5 @@
-import { bold, dim, cyan, yellow, green, magenta } from "./render.js";
+import { bold, dim, cyan, yellow, green, magenta, getTheme } from "./render.js";
+import { highlightLine } from "./highlight.js";
 
 /**
  * Line-buffered markdown renderer for streaming terminal output.
@@ -8,6 +9,7 @@ import { bold, dim, cyan, yellow, green, magenta } from "./render.js";
 export class MarkdownRenderer {
   private buffer = "";
   private inCodeBlock = false;
+  private codeLang = "";
 
   private pendingLen = 0; // how many chars of current partial line we already wrote raw
 
@@ -56,26 +58,36 @@ export class MarkdownRenderer {
   reset(): void {
     this.buffer = "";
     this.inCodeBlock = false;
+    this.codeLang = "";
     this.pendingLen = 0;
   }
 
   private renderLine(line: string): void {
+    const theme = getTheme();
+
     // ── Code block fences ──
     if (line.trimStart().startsWith("```")) {
       if (this.inCodeBlock) {
         this.inCodeBlock = false;
-        process.stdout.write(dim("  ╰─"));
+        this.codeLang = "";
+        if (theme === "default") process.stdout.write(dim("  ╰─"));
       } else {
         this.inCodeBlock = true;
         const lang = line.trimStart().slice(3).trim();
-        process.stdout.write(dim(`  ╭─ ${lang ? magenta(lang) : ""}`));
+        this.codeLang = lang.toLowerCase();
+        if (theme === "default") process.stdout.write(dim(`  ╭─ ${lang ? magenta(lang) : ""}`));
       }
       return;
     }
 
     // ── Inside code block ──
     if (this.inCodeBlock) {
-      process.stdout.write(`  ${dim("│")} ${green(line)}`);
+      const highlighted = this.codeLang ? highlightLine(line, this.codeLang) : green(line);
+      if (theme === "default") {
+        process.stdout.write(`  ${dim("│")} ${highlighted}`);
+      } else {
+        process.stdout.write(`  ${highlighted}`);
+      }
       return;
     }
 
