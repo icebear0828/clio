@@ -1,4 +1,5 @@
 import type { SystemPromptSection, SystemPromptBlock } from "../types.js";
+import { DEFERRED_TOOL_NAMES } from "../tools/index.js";
 import { SectionCache } from "./section-cache.js";
 import { getEnvironmentInfo, loadClaudeMd, loadGitContext } from "./context.js";
 import { createBillingHeader } from "./billing.js";
@@ -10,6 +11,7 @@ import {
   getToneStyle,
   getOutputEfficiency,
 } from "./prompts.js";
+import { listSkills } from "../skills/index.js";
 
 function createSectionRegistry(): SystemPromptSection[] {
   const cwd = process.cwd();
@@ -21,6 +23,33 @@ function createSectionRegistry(): SystemPromptSection[] {
     { name: "safety",            cacheBreak: false, scope: "global", compute: getSafetyInstructions },
     { name: "tone-style",        cacheBreak: false, scope: "global", compute: getToneStyle },
     { name: "output-efficiency", cacheBreak: false, scope: "global", compute: getOutputEfficiency },
+    {
+      name: "deferred-tools",
+      cacheBreak: false,
+      scope: "global",
+      compute: () => Promise.resolve(
+        DEFERRED_TOOL_NAMES.size > 0
+          ? `<available-deferred-tools>\nThe following deferred tools are available via ToolSearch:\n${[...DEFERRED_TOOL_NAMES].join(", ")}\n</available-deferred-tools>`
+          : null
+      ),
+    },
+
+    {
+      name: "available-skills",
+      cacheBreak: true,
+      compute: () => {
+        const skills = listSkills();
+        if (skills.length === 0) return Promise.resolve(null);
+        const lines = skills.map(s => {
+          let line = `- ${s.name}: ${s.description}`;
+          if (s.trigger) line += `\n  TRIGGER when: ${s.trigger}`;
+          return line;
+        });
+        return Promise.resolve(
+          `The following skills are available for use with the Skill tool:\n\n${lines.join("\n")}`
+        );
+      },
+    },
 
     // ── Dynamic sections (recomputed every turn) ──
     { name: "environment",  cacheBreak: true, compute: getEnvironmentInfo },
@@ -34,7 +63,6 @@ export async function buildSystemSections(
 ): Promise<SystemPromptBlock[]> {
   const billing = createBillingHeader();
 
-  // Identity block — no cache_control (CC convention: identity is tiny, no caching scope)
   const identityText = await getIdentity();
   const identity: SystemPromptBlock = { type: "text", text: identityText ?? "" };
 
@@ -44,9 +72,6 @@ export async function buildSystemSections(
   return [billing, identity, ...blocks];
 }
 
-/**
- * Simplified system prompt for sub-agents (matches CC behavior).
- */
 export function getSubAgentSystemPrompt(): string {
   return [
     "You are an agent for Claude Code, Anthropic's official CLI for Claude.",

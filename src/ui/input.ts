@@ -2,10 +2,12 @@ import { stdin, stdout } from "node:process";
 import * as readline from "node:readline/promises";
 import { dim, cyan, boldCyan } from "./render.js";
 import type { FileCompleter } from "./file-completions.js";
+import { loadKeybindings, resolveAction, identifyKey, type Action } from "./keybindings.js";
+import { listSkills } from "../skills/index.js";
 
 const CONTINUATION_PROMPT = "... ";
 
-const SLASH_COMMANDS: Array<{ cmd: string; desc: string }> = [
+const BASE_SLASH_COMMANDS: Array<{ cmd: string; desc: string }> = [
   { cmd: "/btw",      desc: "Quick side question" },
   { cmd: "/clear",    desc: "Reset conversation" },
   { cmd: "/commit",   desc: "Generate commit message" },
@@ -24,6 +26,17 @@ const SLASH_COMMANDS: Array<{ cmd: string; desc: string }> = [
   { cmd: "/theme",    desc: "Switch output theme" },
   { cmd: "/quit",     desc: "Quit" },
 ];
+
+export function getSlashCommands(): Array<{ cmd: string; desc: string }> {
+  const commands = [...BASE_SLASH_COMMANDS];
+  for (const skill of listSkills()) {
+    const cmd = `/${skill.name}`;
+    if (!commands.some(c => c.cmd === cmd)) {
+      commands.push({ cmd, desc: skill.description });
+    }
+  }
+  return commands.sort((a, b) => a.cmd.localeCompare(b.cmd));
+}
 
 /** Strip ANSI escape codes to get visible character count */
 function visibleLength(s: string): number {
@@ -46,6 +59,7 @@ export class InputReader {
   private undoStack: UndoSnapshot[] = [];
   private redoStack: UndoSnapshot[] = [];
   private static MAX_UNDO = 1000;
+  private keybindingsLoaded = false;
 
   setShiftTabHandler(handler: () => void): void {
     this.shiftTabHandler = handler;
@@ -77,6 +91,11 @@ export class InputReader {
    * - Ctrl+C → null (cancel), Ctrl+D on empty → null (EOF)
    */
   async read(prompt: string): Promise<string | null> {
+    if (!this.keybindingsLoaded) {
+      await loadKeybindings();
+      this.keybindingsLoaded = true;
+    }
+
     if (!stdin.isTTY) {
       return this.readFallback(prompt);
     }
@@ -292,7 +311,7 @@ export class InputReader {
       };
 
       const getFilteredCommands = (text: string) =>
-        SLASH_COMMANDS.filter((c) => c.cmd.startsWith(text));
+        getSlashCommands().filter((c) => c.cmd.startsWith(text));
 
       const renderMenu = () => {
         if (menuItems.length === 0) return;
@@ -459,6 +478,302 @@ export class InputReader {
         }
       };
 
+      const handleAction = (action: Action): boolean => {
+        switch (action) {
+          case "submit":
+            if (menuOpen && menuItems.length > 0) {
+              const selected = menuItems[menuIdx].cmd;
+              self.captureUndo(lines, lineIdx, cursor);
+              if (menuMode === "file") {
+                const atToken = getAtToken(lines[lineIdx], cursor);
+                if (atToken) {
+                  lines[lineIdx] =
+                    lines[lineIdx].slice(0, atToken.start) +
+                    selected +
+                    lines[lineIdx].slice(cursor);
+                  cursor = atToken.start + selected.length;
+                }
+              } else {
+                lines[lineIdx] = selected;
+                cursor = selected.length;
+              }
+              closeMenu();
+              redraw();
+              return true;
+            }
+            closeMenu();
+            done(lines.join("\n"));
+            return true;
+
+          case "newline":
+            insertNewLine();
+            return true;
+
+          case "history-prev":
+            if (menuOpen) {
+              clearMenu();
+              menuIdx = (menuIdx - 1 + menuItems.length) % menuItems.length;
+              renderMenu();
+            } else if (lineIdx > 0) {
+              moveLine(lineIdx - 1);
+            } else if (lines.length === 1 && savedHistoryIdx > 0) {
+              savedHistoryIdx--;
+              lines[0] = self.history[savedHistoryIdx];
+              cursor = lines[0].length;
+              redraw();
+            }
+            return true;
+
+          case "history-next":
+            if (menuOpen) {
+              clearMenu();
+              menuIdx = (menuIdx + 1) % menuItems.length;
+              renderMenu();
+            } else if (lineIdx < lines.length - 1) {
+              moveLine(lineIdx + 1);
+            } else if (lines.length === 1 && savedHistoryIdx < self.history.length) {
+              savedHistoryIdx++;
+              lines[0] = savedHistoryIdx < self.history.length
+                ? self.history[savedHistoryIdx]
+                : "";
+              cursor = lines[0].length;
+              redraw();
+            }
+            return true;
+
+          case "cursor-left":
+            if (cursor > 0) {
+              cursor--;
+              stdout.write("\x1b[D");
+            }
+            return true;
+
+          case "cursor-right":
+            if (cursor < lines[lineIdx].length) {
+              cursor++;
+              stdout.write("\x1b[C");
+            }
+            return true;
+
+          case "cursor-home":
+            cursor = 0;
+            redraw();
+            return true;
+
+          case "cursor-end":
+            cursor = lines[lineIdx].length;
+            redraw();
+            return true;
+
+          case "word-left":
+            wordBackward();
+            return true;
+
+          case "word-right":
+            wordForward();
+            return true;
+
+          case "delete-back":
+            if (cursor > 0) {
+              self.captureUndo(lines, lineIdx, cursor);
+              lines[lineIdx] =
+                lines[lineIdx].slice(0, cursor - 1) +
+                lines[lineIdx].slice(cursor);
+              cursor--;
+              redraw();
+
+              const remaining = lines[lineIdx];
+              if (remaining.startsWith("/") && lineIdx === 0) {
+                updateMenu(remaining);
+              } else if (menuMode === "file" && self.fileCompleter) {
+                const atToken = getAtToken(remaining, cursor);
+                if (atToken) {
+                  self.fileCompleter.getCompletions(atToken.token.slice(1)).then((items) => {
+                    if (resolved) return;
+                    updateFileMenu(items);
+                  });
+                } else {
+                  closeMenu();
+                }
+              } else {
+                closeMenu();
+              }
+            } else if (lineIdx > 0) {
+              closeMenu();
+              self.captureUndo(lines, lineIdx, cursor);
+              const currentContent = lines[lineIdx];
+              lines.splice(lineIdx, 1);
+              lineIdx--;
+              cursor = lines[lineIdx].length;
+              lines[lineIdx] += currentContent;
+              fullRedraw();
+            }
+            return true;
+
+          case "delete-word-back":
+            closeMenu();
+            deleteWordBackward();
+            return true;
+
+          case "delete-to-start":
+            closeMenu();
+            self.captureUndo(lines, lineIdx, cursor);
+            self.killRing = lines[lineIdx].slice(0, cursor);
+            lines[lineIdx] = lines[lineIdx].slice(cursor);
+            cursor = 0;
+            redraw();
+            return true;
+
+          case "delete-to-end":
+            self.captureUndo(lines, lineIdx, cursor);
+            self.killRing = lines[lineIdx].slice(cursor);
+            lines[lineIdx] = lines[lineIdx].slice(0, cursor);
+            stdout.write("\x1b[K");
+            return true;
+
+          case "yank":
+            if (self.killRing) {
+              self.captureUndo(lines, lineIdx, cursor);
+              lines[lineIdx] = lines[lineIdx].slice(0, cursor) + self.killRing + lines[lineIdx].slice(cursor);
+              cursor += self.killRing.length;
+              redraw();
+            }
+            return true;
+
+          case "undo":
+            if (self.undoStack.length > 0) {
+              self.redoStack.push({ lines: [...lines], lineIdx, cursor });
+              const snap = self.undoStack.pop()!;
+              lines.length = 0;
+              lines.push(...snap.lines);
+              lineIdx = snap.lineIdx;
+              cursor = snap.cursor;
+              fullRedraw();
+            }
+            return true;
+
+          case "redo":
+            if (self.redoStack.length > 0) {
+              self.undoStack.push({ lines: [...lines], lineIdx, cursor });
+              const snap = self.redoStack.pop()!;
+              lines.length = 0;
+              lines.push(...snap.lines);
+              lineIdx = snap.lineIdx;
+              cursor = snap.cursor;
+              fullRedraw();
+            }
+            return true;
+
+          case "search-history":
+            closeMenu();
+            enterSearch();
+            return true;
+
+          case "clear-screen":
+            stdout.write("\x1b[2J\x1b[H");
+            fullRedraw();
+            return true;
+
+          case "cancel":
+            closeMenu();
+            done(null);
+            return true;
+
+          case "eof":
+            if (lines.every((l) => l === "")) {
+              closeMenu();
+              done(null);
+              return true;
+            }
+            return false;
+
+          case "escape":
+            if (searchMode) { exitSearch(false); return true; }
+            if (menuOpen) closeMenu();
+            return true;
+
+          case "tab": {
+            const currentText = lines[lineIdx];
+            if (menuOpen && menuItems.length > 0) {
+              const selected = menuItems[menuIdx].cmd;
+              self.captureUndo(lines, lineIdx, cursor);
+              if (menuMode === "file") {
+                const atToken = getAtToken(lines[lineIdx], cursor);
+                if (atToken) {
+                  lines[lineIdx] =
+                    lines[lineIdx].slice(0, atToken.start) +
+                    selected +
+                    lines[lineIdx].slice(cursor);
+                  cursor = atToken.start + selected.length;
+                }
+              } else {
+                lines[lineIdx] = selected;
+                cursor = selected.length;
+              }
+              closeMenu();
+              redraw();
+            } else if (currentText.startsWith("/") && lineIdx === 0) {
+              const matches = getFilteredCommands(currentText);
+              if (matches.length === 1) {
+                self.captureUndo(lines, lineIdx, cursor);
+                lines[lineIdx] = matches[0].cmd;
+                cursor = matches[0].cmd.length;
+                redraw();
+              } else if (matches.length > 1) {
+                openMenu(currentText);
+              }
+            } else if (self.fileCompleter) {
+              const atToken = getAtToken(currentText, cursor);
+              if (atToken) {
+                const partial = atToken.token.slice(1);
+                self.fileCompleter.getCompletions(partial).then((matches) => {
+                  if (resolved) return;
+                  if (matches.length === 1) {
+                    self.captureUndo(lines, lineIdx, cursor);
+                    lines[lineIdx] =
+                      lines[lineIdx].slice(0, atToken.start) +
+                      matches[0].cmd +
+                      lines[lineIdx].slice(cursor);
+                    cursor = atToken.start + matches[0].cmd.length;
+                    redraw();
+                  } else if (matches.length > 1) {
+                    openFileMenu(matches);
+                  }
+                });
+              } else {
+                self.captureUndo(lines, lineIdx, cursor);
+                lines[lineIdx] =
+                  currentText.slice(0, cursor) +
+                  "  " +
+                  currentText.slice(cursor);
+                cursor += 2;
+                redraw();
+              }
+            } else {
+              self.captureUndo(lines, lineIdx, cursor);
+              lines[lineIdx] =
+                currentText.slice(0, cursor) +
+                "  " +
+                currentText.slice(cursor);
+              cursor += 2;
+              redraw();
+            }
+            return true;
+          }
+
+          case "shift-tab":
+            if (self.shiftTabHandler) self.shiftTabHandler();
+            return true;
+
+          case "verbose-toggle":
+            if (self.ctrlOHandler) self.ctrlOHandler();
+            return true;
+
+          default:
+            return false;
+        }
+      };
+
       const onData = (chunk: Buffer) => {
         const data = chunk.toString("utf-8");
 
@@ -505,6 +820,21 @@ export class InputReader {
         for (let i = 0; i < data.length; i++) {
           const ch = data[i];
           const code = data.charCodeAt(i);
+
+          if (!searchMode) {
+            const identified = identifyKey(data, i);
+            if (identified) {
+              const action = resolveAction(identified.key);
+              if (action) {
+                const handled = handleAction(action);
+                if (handled) {
+                  i += identified.consumed - 1;
+                  if (resolved) return;
+                  continue;
+                }
+              }
+            }
+          }
 
           // ── CSI escape sequences (\x1b[ params finalByte) ──
           if (ch === "\x1b" && i + 1 < data.length && data[i + 1] === "[") {

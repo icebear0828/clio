@@ -12,11 +12,14 @@ import { buildSystemPrompt } from "./core/context.js";
 import { MarkdownRenderer } from "./ui/markdown.js";
 import { PermissionManager } from "./core/permissions.js";
 import { InputReader } from "./ui/input.js";
+import { loadKeybindings } from "./ui/keybindings.js";
 import { loadSettings, getSettingsInfo, type Settings } from "./core/settings.js";
 import { setAllowOutsideCwd, setToolContext, setMcpManager } from "./tools/index.js";
 import { McpManager, setGlobalMcpManager } from "./tools/mcp.js";
 import { taskStore } from "./tools/tasks.js";
 import { loadCustomAgents, listCustomAgents } from "./commands/custom-agents.js";
+import { loadSkills } from "./skills/loader.js";
+import { getSkill } from "./skills/index.js";
 import { parseInputWithImages } from "./ui/image.js";
 import { StatusBar } from "./ui/statusbar.js";
 import { FileCompleter, resolveFileReferences } from "./ui/file-completions.js";
@@ -185,7 +188,9 @@ Options:
 
 async function main(): Promise<void> {
   const settings = await loadSettings();
+  await loadKeybindings();
   await loadCustomAgents();
+  await loadSkills();
   const { config, resumeId, forkSessionId, cliAllowRules } = loadConfig(settings);
 
   // Merge allow rules: settings file + CLI flags
@@ -650,6 +655,63 @@ async function main(): Promise<void> {
     !command      Run shell command directly
 `);
       continue;
+    }
+
+    // ── Catch-all skill routing ──
+    if (trimmed.startsWith("/")) {
+      const parts = trimmed.split(/\s+/);
+      const cmdName = parts[0].slice(1);
+      const skill = getSkill(cmdName);
+      if (skill) {
+        const args = parts.slice(1).join(" ");
+        const prompt = args
+          ? skill.promptTemplate.replace(/\{\{args\}\}/g, args)
+          : skill.promptTemplate;
+        messages.push({ role: "user", content: prompt });
+        console.log();
+        const abort = new AbortController();
+        checkpointManager.begin(messages.length - 1);
+        let rollbackRequested = false;
+        const escHandler = withEscapeInterrupt(abort, () => {
+          rollbackRequested = true;
+          abort.abort();
+        });
+        escapeControl = escHandler;
+        try {
+          const turnUsage = await runAgentLoop(config, messages, permissionManager, abort.signal, settings.hooks, checkpointManager, sectionCache);
+          sessionUsage.inputTokens += turnUsage.inputTokens;
+          sessionUsage.outputTokens += turnUsage.outputTokens;
+          statusBar.update(sessionUsage);
+        } catch (err) {
+          if (err instanceof Error && err.name === "AbortError") {
+            process.stderr.write(dim("\n  Interrupted.\n"));
+          } else {
+            console.error(red(`\nError: ${err instanceof Error ? err.message : err}`));
+          }
+          if (!rollbackRequested) {
+            while (messages.length > 0 && messages[messages.length - 1].role === "assistant") messages.pop();
+            messages.pop();
+          }
+        } finally {
+          escapeControl = null;
+          escHandler.cleanup();
+        }
+        if (rollbackRequested && checkpointManager.getModifiedFiles().length > 0) {
+          const confirmed = await promptRollback(checkpointManager);
+          if (confirmed) {
+            const restored = await checkpointManager.rollback();
+            messages.length = checkpointManager.getMessageCountBefore();
+            process.stderr.write(dim(`  Rolled back ${restored.length} file(s).\n`));
+          } else {
+            checkpointManager.commit();
+          }
+        } else {
+          checkpointManager.commit();
+        }
+        await session.save(messages, sessionUsage).catch(() => {});
+        console.log();
+        continue;
+      }
     }
 
     // ── Shell escape: !command ──

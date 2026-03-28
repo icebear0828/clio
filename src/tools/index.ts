@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import fg from "fast-glob";
 import type { PermissionMode, ToolContext } from "../types.js";
 import { taskStore, formatTaskList, formatTaskDetail, type TaskStatus } from "./tasks.js";
+import { getSkill, listSkills } from "../skills/index.js";
 import type { McpManager } from "./mcp.js";
 import type { SubAgentOptions } from "./subagent.js";
 
@@ -252,7 +253,37 @@ export const TOOL_DEFINITIONS = [
       required: ["id"],
     },
   },
+  {
+    name: "Skill",
+    description: "Execute a skill within the main conversation. Skills provide specialized capabilities and domain knowledge.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        skill: { type: "string", description: "The skill name (e.g. 'commit', 'pr', 'review')" },
+        args: { type: "string", description: "Optional arguments for the skill" },
+      },
+      required: ["skill"],
+    },
+  },
+  {
+    name: "ToolSearch",
+    description: "Fetches full schema definitions for deferred tools so they can be called. Query with 'select:Name1,Name2' for exact match, or keywords to search.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        query: { type: "string", description: "Query to find deferred tools. Use 'select:Name1,Name2' for exact match, or keywords to search." },
+        max_results: { type: "number", description: "Maximum results to return (default: 5)" },
+      },
+      required: ["query"],
+    },
+  },
 ];
+
+export const DEFERRED_TOOL_NAMES = new Set([
+  "WebFetch", "WebSearch",
+  "EnterPlanMode", "ExitPlanMode",
+  "TaskCreate", "TaskUpdate", "TaskList", "TaskGet",
+]);
 
 // ── Tool execution ──
 
@@ -293,6 +324,10 @@ export async function executeTool(
       return toolTaskList();
     case "TaskGet":
       return toolTaskGet(input as { id: string });
+    case "Skill":
+      return toolSkill(input as { skill: string; args?: string });
+    case "ToolSearch":
+      return toolToolSearch(input as { query: string; max_results?: number });
     default:
       if (mcpManager?.isMcpTool(name)) {
         return mcpManager.callTool(name, input);
@@ -746,4 +781,47 @@ async function toolTaskList(): Promise<string> {
 
 async function toolTaskGet(input: { id: string }): Promise<string> {
   return formatTaskDetail(taskStore.get(input.id));
+}
+
+function toolToolSearch(input: { query: string; max_results?: number }): string {
+  const maxResults = input.max_results ?? 5;
+  const deferredTools = TOOL_DEFINITIONS.filter(t => DEFERRED_TOOL_NAMES.has(t.name));
+
+  let matched: typeof deferredTools;
+
+  if (input.query.startsWith("select:")) {
+    const names = input.query.slice(7).split(",").map(n => n.trim());
+    matched = deferredTools.filter(t => names.includes(t.name));
+  } else {
+    const q = input.query.toLowerCase();
+    matched = deferredTools
+      .filter(t => t.name.toLowerCase().includes(q) || t.description.toLowerCase().includes(q))
+      .slice(0, maxResults);
+  }
+
+  if (matched.length === 0) {
+    return "No matching deferred tools found. Available: " + deferredTools.map(t => t.name).join(", ");
+  }
+
+  const functions = matched.map(t =>
+    `<function>${JSON.stringify({ description: t.description, name: t.name, parameters: t.input_schema })}</function>`
+  ).join("\n");
+
+  return `<functions>\n${functions}\n</functions>`;
+}
+
+export function buildToolsForRequest(unlockedDeferred: Set<string>): typeof TOOL_DEFINITIONS {
+  return TOOL_DEFINITIONS.filter(t => !DEFERRED_TOOL_NAMES.has(t.name) || unlockedDeferred.has(t.name));
+}
+
+function toolSkill(input: { skill: string; args?: string }): string {
+  const skill = getSkill(input.skill);
+  if (!skill) {
+    const available = listSkills().map(s => s.name).join(", ");
+    throw new Error(`Skill "${input.skill}" not found. Available: ${available || "(none)"}`);
+  }
+  const prompt = input.args
+    ? skill.promptTemplate.replace(/\{\{args\}\}/g, input.args)
+    : skill.promptTemplate;
+  return `<skill-instructions>\n${prompt}\n</skill-instructions>`;
 }

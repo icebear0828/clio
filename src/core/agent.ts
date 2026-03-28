@@ -1,6 +1,6 @@
 import { streamRequest } from "./client.js";
 import { compactConversation } from "./compact.js";
-import { executeTool, TOOL_DEFINITIONS } from "../tools/index.js";
+import { executeTool, buildToolsForRequest, DEFERRED_TOOL_NAMES } from "../tools/index.js";
 import { getMcpToolDefinitions } from "../tools/mcp.js";
 import { renderToolCall, renderToolResult, renderPermissionDenied, renderDiff, startSpinner, dim } from "../ui/render.js";
 import type { PermissionManager } from "./permissions.js";
@@ -10,6 +10,8 @@ import { MarkdownRenderer } from "../ui/markdown.js";
 import { runHooks, type HooksConfig } from "../tools/hooks.js";
 import type { Config, ContentBlock, Message, UsageStats } from "../types.js";
 import type { CheckpointManager } from "../tools/checkpoint.js";
+import { normalizeMessages } from "./normalize.js";
+import { computeThinkingBudget } from "./adaptive-thinking.js";
 
 export function getContextLimit(model: string): number {
   const m = model.toLowerCase();
@@ -61,10 +63,7 @@ export async function runAgentLoop(
 
   const cache = sectionCache ?? new SectionCache();
 
-  const allTools = [...TOOL_DEFINITIONS, ...getMcpToolDefinitions()];
-  const tools = allTools.map((t, i, arr) =>
-    i === arr.length - 1 ? { ...t, cache_control: { type: "ephemeral" as const } } : t
-  );
+  const unlockedDeferred = new Set<string>();
 
   const contextLimit = getContextLimit(config.model);
 
@@ -78,24 +77,38 @@ export async function runAgentLoop(
         messages.push({ role: "user", content: "Summary of prior conversation:\n\n" + summary });
         messages.push({ role: "assistant", content: "Understood. I have the context. Continuing." });
       } catch {
-        // compact failed — proceed anyway, API will truncate if needed
       }
     }
 
+    const normalizedMessages = normalizeMessages(messages, {
+      apiFormat: config.apiFormat,
+      keepRecentThinkingTurns: 2,
+    });
+
+    const coreTools = buildToolsForRequest(unlockedDeferred);
+    const allTools = [...coreTools, ...getMcpToolDefinitions()];
+    const tools = allTools.map((t, i, arr) =>
+      i === arr.length - 1 ? { ...t, cache_control: { type: "ephemeral" as const } } : t
+    );
+
     const system = await buildSystemSections(cache);
+
+    const effectiveBudget = config.thinkingBudget > 0
+      ? computeThinkingBudget(estimateTokens(normalizedMessages), config.thinkingBudget, contextLimit)
+      : 0;
 
     const body: Record<string, unknown> = {
       model: config.model,
-      messages,
-      max_tokens: config.thinkingBudget > 0 ? config.thinkingBudget + 16384 : 16384,
+      messages: normalizedMessages,
+      max_tokens: effectiveBudget > 0 ? effectiveBudget + 16384 : 16384,
       tools,
       system,
     };
 
-    if (config.thinkingBudget > 0) {
+    if (effectiveBudget > 0) {
       body.thinking = {
         type: "enabled",
-        budget_tokens: config.thinkingBudget,
+        budget_tokens: effectiveBudget,
       };
     }
 
@@ -110,7 +123,6 @@ export async function runAgentLoop(
     for await (const event of streamRequest(config, body, signal)) {
       const type = event.type as string;
 
-      // API error event — surface to user and stop
       if (type === "error") {
         const err = event.error as Record<string, unknown> | undefined;
         const msg = (err?.message as string) ?? "Unknown streaming error";
@@ -180,11 +192,10 @@ export async function runAgentLoop(
             input: parsedInput,
           });
         } else if (current.type === "thinking") {
-          // Preserve in history for API correctness
           contentBlocks.push({
             type: "thinking",
             thinking: current.thinking,
-            signature: "", // will be filled by actual API response
+            signature: "",
           });
         }
         current = null;
@@ -204,14 +215,11 @@ export async function runAgentLoop(
       }
     }
 
-    // Flush any remaining buffered markdown + trailing newline
     md.flush();
     if (hasTextOutput) process.stdout.write("\n");
 
-    // Add assistant message to history
     messages.push({ role: "assistant", content: contentBlocks });
 
-    // Done — no tool use
     if (stopReason !== "tool_use") return usage;
 
     // ── Execute tools ──
@@ -226,12 +234,10 @@ export async function runAgentLoop(
 
       renderToolCall(toolName, toolInput);
 
-      // Show diff preview for Edit tool
       if (toolName === "Edit" && toolInput.old_string && toolInput.new_string) {
         renderDiff(toolInput.old_string as string, toolInput.new_string as string);
       }
 
-      // Permission gate — ask before dangerous/write tools
       const decision = await permissionManager.check(toolName, toolInput);
       if (decision === "deny") {
         renderPermissionDenied(toolName);
@@ -244,7 +250,6 @@ export async function runAgentLoop(
         continue;
       }
 
-      // Pre-hook — can block execution
       const preOk = await runHooks(hooks, "pre", toolName, toolInput);
       if (!preOk) {
         toolResults.push({
@@ -263,18 +268,37 @@ export async function runAgentLoop(
         }
       }
 
+      if (DEFERRED_TOOL_NAMES.has(toolName) && !unlockedDeferred.has(toolName)) {
+        const msg = `Tool "${toolName}" is deferred. Use ToolSearch to fetch its schema first (e.g. ToolSearch with query "select:${toolName}").`;
+        renderToolResult(msg, true);
+        toolResults.push({
+          type: "tool_result",
+          tool_use_id: block.id,
+          content: msg,
+          is_error: true,
+        });
+        continue;
+      }
+
       const stopSpin = startSpinner(`Running ${toolName}...`);
 
       try {
         const result = await executeTool(toolName, toolInput);
         stopSpin();
+        if (toolName === "ToolSearch") {
+          const nameMatches = result.matchAll(/"name":\s*"([^"]+)"/g);
+          for (const m of nameMatches) {
+            if (DEFERRED_TOOL_NAMES.has(m[1])) {
+              unlockedDeferred.add(m[1]);
+            }
+          }
+        }
         renderToolResult(result, false);
         toolResults.push({
           type: "tool_result",
           tool_use_id: block.id,
           content: result,
         });
-        // Post-hook (non-blocking)
         await runHooks(hooks, "post", toolName, toolInput);
       } catch (err) {
         stopSpin();
