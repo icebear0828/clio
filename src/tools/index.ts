@@ -827,13 +827,19 @@ async function toolAgent(input: {
   if (!toolContext) throw new Error("Agent tool requires tool context");
   const { executeSubAgent } = await import("./subagent.js");
 
+  const BUILTIN_AGENT_TYPES = new Set(["general-purpose", "Explore", "Plan"]);
+
   let options: SubAgentOptions | undefined;
-  if (input.subagent_type) {
+  if (input.subagent_type && BUILTIN_AGENT_TYPES.has(input.subagent_type)) {
+    // Built-in agent type — route via agentType in SubAgentOptions
+    options = { agentType: input.subagent_type as "general-purpose" | "Explore" | "Plan" };
+  } else if (input.subagent_type) {
+    // Custom agent from .clio/agents/
     const { getCustomAgent, listCustomAgents } = await import("../commands/custom-agents.js");
     const def = getCustomAgent(input.subagent_type);
     if (!def) {
       const available = listCustomAgents();
-      throw new Error(`Custom agent "${input.subagent_type}" not found. Available: ${available.length > 0 ? available.join(", ") : "(none)"}`);
+      throw new Error(`Custom agent "${input.subagent_type}" not found. Available: general-purpose, Explore, Plan${available.length > 0 ? ", " + available.join(", ") : ""}`);
     }
     options = {
       systemPromptOverride: def.systemPrompt,

@@ -13,7 +13,7 @@ import { MarkdownRenderer } from "./ui/markdown.js";
 import { PermissionManager } from "./core/permissions.js";
 import { InputReader } from "./ui/input.js";
 import { loadKeybindings } from "./ui/keybindings.js";
-import { loadSettings, getSettingsInfo, type Settings } from "./core/settings.js";
+import { loadSettings, getSettingsInfo, saveGlobalLocalSettings, type Settings } from "./core/settings.js";
 import { setAllowOutsideCwd, setToolContext, setMcpManager, setSandbox, setLspManager } from "./tools/index.js";
 import { McpManager, setGlobalMcpManager } from "./tools/mcp.js";
 import { LspManager, setGlobalLspManager } from "./tools/lsp.js";
@@ -31,9 +31,126 @@ import { CheckpointManager } from "./tools/checkpoint.js";
 import { SectionCache } from "./core/section-cache.js";
 import { initPlugins } from "./plugins/index.js";
 import { stdin } from "node:process";
+import * as readline from "node:readline/promises";
 import type { ApiFormat, Config, Message, PermissionMode, UsageStats } from "./types.js";
 
 type OutputFormat = "text" | "json";
+
+interface ProviderPreset {
+  name: string;
+  apiUrl: string;
+  model: string;
+  apiFormat: ApiFormat;
+}
+
+const PROVIDER_PRESETS: ProviderPreset[] = [
+  { name: "Anthropic",  apiUrl: "https://api.anthropic.com",         model: "claude-sonnet-4-20250514", apiFormat: "anthropic" },
+  { name: "OpenAI",     apiUrl: "https://api.openai.com/v1",         model: "gpt-4o",                   apiFormat: "openai" },
+  { name: "Google",     apiUrl: "https://generativelanguage.googleapis.com/v1beta/openai", model: "gemini-2.5-flash", apiFormat: "openai" },
+];
+
+function arrowSelect(items: string[], title: string): Promise<number> {
+  return new Promise((resolve) => {
+    let selected = 0;
+
+    // Save cursor position right before the menu, use it as anchor
+    // We'll use \x1b[s / \x1b[u (save/restore cursor) for reliable positioning
+    process.stderr.write(`  ${title}\n\n`);
+    process.stderr.write("\x1b[s"); // save cursor — this is our anchor point
+
+    const render = () => {
+      process.stderr.write("\x1b[u"); // restore to anchor
+      for (let i = 0; i < items.length; i++) {
+        const prefix = i === selected ? boldCyan("❯ ") : "  ";
+        const label = i === selected ? bold(items[i]) : dim(items[i]);
+        process.stderr.write(`\x1b[2K  ${prefix}${label}\n`);
+      }
+      process.stderr.write(`\x1b[2K\n`);
+      process.stderr.write(`\x1b[2K  ${dim("↑/↓ to move, Enter to select")}`);
+    };
+
+    render();
+
+    stdin.setRawMode(true);
+    stdin.resume();
+
+    const onData = (buf: Buffer) => {
+      const s = buf.toString();
+      if (s === "\x1b[A" || s === "k") {
+        selected = (selected - 1 + items.length) % items.length;
+        render();
+      } else if (s === "\x1b[B" || s === "j") {
+        selected = (selected + 1) % items.length;
+        render();
+      } else if (s === "\r" || s === "\n") {
+        stdin.removeListener("data", onData);
+        stdin.setRawMode(false);
+        // Clear menu: restore anchor, overwrite with selection
+        process.stderr.write("\x1b[u");
+        for (let i = 0; i < items.length + 2; i++) {
+          process.stderr.write(`\x1b[2K\n`);
+        }
+        process.stderr.write("\x1b[u");
+        process.stderr.write(`${dim("Provider:")} ${bold(items[selected])}\n\n`);
+        resolve(selected);
+      } else if (s === "\x03") {
+        stdin.removeListener("data", onData);
+        stdin.setRawMode(false);
+        process.exit(0);
+      }
+    };
+    stdin.on("data", onData);
+  });
+}
+
+async function runSetupWizard(): Promise<{ apiUrl: string; apiKey: string; model: string; apiFormat: ApiFormat }> {
+  process.stderr.write("\n");
+  process.stderr.write(boldCyan("  ── Welcome to Clio ──\n\n"));
+  process.stderr.write("  No API key configured. Let's set one up.\n\n");
+
+  const options = [
+    ...PROVIDER_PRESETS.map(p => p.name),
+    "Custom (any OpenAI-compatible endpoint)",
+  ];
+
+  const choice = await arrowSelect(options, "Choose a provider:");
+
+  // Create readline AFTER arrowSelect releases raw mode
+  const rl = readline.createInterface({ input: stdin, output: process.stderr });
+
+  let apiUrl: string;
+  let apiKey: string;
+  let model: string;
+  let apiFormat: ApiFormat;
+
+  if (choice < PROVIDER_PRESETS.length) {
+    const preset = PROVIDER_PRESETS[choice];
+    apiUrl = preset.apiUrl;
+    model = preset.model;
+    apiFormat = preset.apiFormat;
+    process.stderr.write(`  ${dim("Model:")}    ${model}\n\n`);
+    apiKey = (await rl.question(dim("  API Key: "))).trim();
+  } else {
+    apiUrl = (await rl.question(dim("  API URL: "))).trim();
+    apiKey = (await rl.question(dim("  API Key: "))).trim();
+    model = (await rl.question(dim("  Model:   "))).trim();
+    const fmtAnswer = (await rl.question(dim("  Format (anthropic/openai) [openai]: "))).trim();
+    apiFormat = fmtAnswer === "anthropic" ? "anthropic" : "openai";
+  }
+
+  rl.close();
+
+  if (!apiKey) {
+    process.stderr.write(red("\n  Error: API key cannot be empty.\n"));
+    process.exit(1);
+  }
+
+  const settings: Settings = { apiUrl, apiKey, model, apiFormat };
+  await saveGlobalLocalSettings(settings);
+  process.stderr.write(green(`\n  ✓ Saved to ~/.clio/settings.local.json\n\n`));
+
+  return { apiUrl, apiKey, model, apiFormat };
+}
 
 interface PrintModeConfig {
   prompt: string;
@@ -199,8 +316,8 @@ Options:
   }
 
   if (!config.apiKey) {
-    console.error(red("Error: API key required. Set CLIO_API_KEY env var or use --api-key"));
-    process.exit(1);
+    // Will be handled by setup wizard in main()
+    config.apiKey = "";
   }
 
   // Build printMode if -p was given or stdin is piped
@@ -292,6 +409,19 @@ async function main(): Promise<void> {
   const pluginContribs = await initPlugins(settings);
 
   const { config, resumeId, forkSessionId, cliAllowRules, printMode } = loadConfig(settings);
+
+  // First-run setup wizard when no API key is configured
+  if (!config.apiKey) {
+    if (!stdin.isTTY) {
+      console.error(red("Error: API key required. Set CLIO_API_KEY env var or use --api-key"));
+      process.exit(1);
+    }
+    const setup = await runSetupWizard();
+    config.apiKey = setup.apiKey;
+    config.apiUrl = setup.apiUrl;
+    config.model = setup.model;
+    config.apiFormat = setup.apiFormat;
+  }
 
   // Merge allow rules: settings file + CLI flags
   const allowRules = [...(settings.allowRules ?? []), ...cliAllowRules];
@@ -762,7 +892,7 @@ async function main(): Promise<void> {
     }
 
     if (trimmed === "/init") {
-      process.stderr.write(dim("  Scanning project and generating CLAUDE.md...\n"));
+      process.stderr.write(dim("  Scanning project and generating AGENTS.md...\n"));
       try {
         const filePath = await initClaudeMd(config);
         console.log(dim(`  Created ${filePath}\n`));
@@ -810,7 +940,7 @@ async function main(): Promise<void> {
     /context      Show context window usage
     /cost         Show token usage and cost
     /doctor       System health check
-    /init         Generate CLAUDE.md for this project
+    /init         Generate AGENTS.md for this project
     /model [m]    Show or switch model
     /pr           Generate and create pull request
     /review       Code review current changes

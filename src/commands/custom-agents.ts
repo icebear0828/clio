@@ -83,15 +83,19 @@ async function scanDir(dirPath: string): Promise<Map<string, CustomAgentDef>> {
 export async function loadCustomAgents(): Promise<void> {
   registry.clear();
 
-  const globalDir = path.join(os.homedir(), ".clio", "agents");
-  const globalAgents = await scanDir(globalDir);
-  for (const [name, def] of globalAgents) {
-    registry.set(name, def);
+  // Global agents: ~/.agents/agents/ > ~/.clio/agents/
+  for (const base of [path.join(os.homedir(), ".agents", "agents"), path.join(os.homedir(), ".clio", "agents")]) {
+    const agents = await scanDir(base);
+    for (const [name, def] of agents) {
+      registry.set(name, def);
+    }
   }
 
-  const projectDir = path.resolve(".clio", "agents");
-  const projectAgents = await scanDir(projectDir);
-  for (const [name, def] of projectAgents) {
-    registry.set(name, def);
+  // Project agents: .agents/agents/ > .clio/agents/
+  for (const base of [path.resolve(".agents", "agents"), path.resolve(".clio", "agents")]) {
+    const agents = await scanDir(base);
+    for (const [name, def] of agents) {
+      registry.set(name, def);
+    }
   }
 }

@@ -47,15 +47,19 @@ export async function loadSkills(): Promise<void> {
     registerSkill(skill);
   }
 
-  const globalDir = path.join(os.homedir(), ".clio", "skills");
-  const globalSkills = await scanSkillDir(globalDir, "global");
-  for (const skill of globalSkills) {
-    registerSkill(skill);
+  // Global skills: ~/.agents/skills/ > ~/.clio/skills/
+  for (const base of [path.join(os.homedir(), ".agents", "skills"), path.join(os.homedir(), ".clio", "skills")]) {
+    const globalSkills = await scanSkillDir(base, "global");
+    for (const skill of globalSkills) {
+      registerSkill(skill);
+    }
   }
 
-  const projectDir = path.join(process.cwd(), ".clio", "skills");
-  const projectSkills = await scanSkillDir(projectDir, "project");
-  for (const skill of projectSkills) {
-    registerSkill(skill);
+  // Project skills: .agents/skills/ > .clio/skills/
+  for (const base of [path.join(process.cwd(), ".agents", "skills"), path.join(process.cwd(), ".clio", "skills")]) {
+    const projectSkills = await scanSkillDir(base, "project");
+    for (const skill of projectSkills) {
+      registerSkill(skill);
+    }
   }
 }

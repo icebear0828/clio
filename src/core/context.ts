@@ -7,19 +7,28 @@ import * as os from "node:os";
 const execAsync = promisify(exec);
 
 /**
- * Walk up from cwd to find all CLAUDE.md files (closest first).
- * Also checks for .claude/CLAUDE.md in each directory.
+ * Walk up from cwd to find all instruction files (closest first).
+ * Priority per directory: AGENTS.md > CLAUDE.md, then .agents/ > .claude/ subdirs.
+ * Only the first match per directory level is used (no duplicates).
  */
-async function findClaudeMdFiles(cwd: string): Promise<string[]> {
+async function findInstructionFiles(cwd: string): Promise<string[]> {
   const found: string[] = [];
   let dir = path.resolve(cwd);
 
+  const candidates = [
+    "AGENTS.md",
+    "CLAUDE.md",
+    path.join(".agents", "AGENTS.md"),
+    path.join(".claude", "CLAUDE.md"),
+  ];
+
   while (true) {
-    for (const name of ["CLAUDE.md", path.join(".claude", "CLAUDE.md")]) {
+    for (const name of candidates) {
       const filePath = path.join(dir, name);
       try {
         await fs.access(filePath);
         found.push(filePath);
+        break; // first match wins per directory level
       } catch {
         // not found
       }
@@ -35,10 +44,10 @@ async function findClaudeMdFiles(cwd: string): Promise<string[]> {
 }
 
 /**
- * Load and concatenate all CLAUDE.md content.
+ * Load and concatenate all instruction file content (AGENTS.md / CLAUDE.md).
  */
 export async function loadClaudeMd(cwd: string): Promise<string | null> {
-  const files = await findClaudeMdFiles(cwd);
+  const files = await findInstructionFiles(cwd);
   if (files.length === 0) return null;
 
   const sections: string[] = [];
@@ -110,7 +119,7 @@ export function getEnvironmentInfo(): Promise<string | null> {
 }
 
 /**
- * Build the full system prompt with environment, CLAUDE.md, and git context.
+ * Build the full system prompt with environment, AGENTS.md/CLAUDE.md, and git context.
  * Kept for backward compatibility (/btw, /context, etc.)
  */
 export async function buildSystemPrompt(): Promise<string> {

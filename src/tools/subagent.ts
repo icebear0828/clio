@@ -6,9 +6,15 @@ import type { Config, ContentBlock, Message } from "../types.js";
 
 const MAX_ITERATIONS = 15;
 
+export type BuiltinAgentType = "general-purpose" | "Explore" | "Plan";
+
+// Explore and Plan agents get all tools EXCEPT these (mirrors CC behavior)
+const EXPLORE_PLAN_EXCLUDED = new Set(["Agent", "ExitPlanMode", "Edit", "Write", "NotebookEdit"]);
+
 export interface SubAgentOptions {
   systemPromptOverride?: string;
   allowedTools?: string[];
+  agentType?: BuiltinAgentType;
   model?: string;
   maxIterations?: number;
   workdir?: string;
@@ -38,7 +44,8 @@ export async function executeSubAgent(
   try {
   const messages: Message[] = [{ role: "user", content: prompt }];
 
-  const systemText = options?.systemPromptOverride ?? getSubAgentSystemPrompt();
+  const agentType = options?.agentType ?? "general-purpose";
+  const systemText = options?.systemPromptOverride ?? getSubAgentSystemPrompt(agentType);
   const system = [
     {
       type: "text",
@@ -48,9 +55,13 @@ export async function executeSubAgent(
   ];
 
   const SUBAGENT_EXCLUDED = new Set(["Agent", "AskUserQuestion", "EnterPlanMode", "ExitPlanMode"]);
-  const allowedSet = options?.allowedTools ? new Set(options.allowedTools) : null;
+
+  // Determine allowed tools based on agent type
+  let allowedSet: Set<string> | null = options?.allowedTools ? new Set(options.allowedTools) : null;
+  const useExclusionFilter = !allowedSet && (agentType === "Explore" || agentType === "Plan");
+
   const allTools = [
-    ...TOOL_DEFINITIONS.filter((t) => !SUBAGENT_EXCLUDED.has(t.name) && (!allowedSet || allowedSet.has(t.name))),
+    ...TOOL_DEFINITIONS.filter((t) => !SUBAGENT_EXCLUDED.has(t.name) && (!allowedSet || allowedSet.has(t.name)) && (!useExclusionFilter || !EXPLORE_PLAN_EXCLUDED.has(t.name))),
     ...getMcpToolDefinitions(),
   ];
   const tools = allTools.map((t, i, arr) =>

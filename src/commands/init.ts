@@ -8,7 +8,7 @@ import type { Config } from "../types.js";
 
 const execAsync = promisify(exec);
 
-const INIT_PROMPT = `Based on the project context below, generate a CLAUDE.md file that gives an AI assistant the essential information it needs to work on this project.
+const INIT_PROMPT = `Based on the project context below, generate an AGENTS.md file that gives an AI coding agent the essential information it needs to work on this project.
 
 Include:
 - Project overview (1-2 sentences)
@@ -70,14 +70,18 @@ async function gatherProjectContext(cwd: string): Promise<string> {
 
 export async function initClaudeMd(config: Config): Promise<string> {
   const cwd = process.cwd();
-  const target = path.join(cwd, "CLAUDE.md");
+  // Check for existing instruction file (AGENTS.md or CLAUDE.md)
+  const agentsPath = path.join(cwd, "AGENTS.md");
+  const claudePath = path.join(cwd, "CLAUDE.md");
+  let target = agentsPath;
 
-  // Check if already exists
-  try {
-    await fs.access(target);
-    throw new Error("CLAUDE.md already exists. Delete it first or edit manually.");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  for (const p of [agentsPath, claudePath]) {
+    try {
+      await fs.access(p);
+      throw new Error(`${path.basename(p)} already exists. Delete it first or edit manually.`);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
   }
 
   const context = await gatherProjectContext(cwd);

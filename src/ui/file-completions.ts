@@ -14,7 +14,7 @@ export class FileCompleter {
     if (this.cache) return this.cache;
     const files = await fg("**/*", {
       cwd: this.cwd,
-      ignore: ["**/node_modules/**", "**/.git/**", "**/dist/**", "**/.clio/**"],
+      ignore: ["**/node_modules/**", "**/.git/**", "**/dist/**", "**/.clio/**", "**/.agents/**"],
       onlyFiles: true,
       suppressErrors: true,
     });

@@ -17,7 +17,7 @@ const BASE_SLASH_COMMANDS: Array<{ cmd: string; desc: string }> = [
   { cmd: "/doctor",   desc: "System health check" },
   { cmd: "/exit",     desc: "Save and quit" },
   { cmd: "/help",     desc: "Show commands" },
-  { cmd: "/init",     desc: "Generate CLAUDE.md" },
+  { cmd: "/init",     desc: "Generate AGENTS.md" },
   { cmd: "/model",    desc: "Show/switch model" },
   { cmd: "/pr",       desc: "Create pull request" },
   { cmd: "/review",   desc: "Review git diff" },

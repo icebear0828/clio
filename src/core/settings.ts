@@ -132,6 +132,11 @@ export async function loadSettings(): Promise<Settings> {
   return result;
 }
 
+export async function saveGlobalLocalSettings(settings: Settings): Promise<void> {
+  await fs.mkdir(GLOBAL_DIR, { recursive: true });
+  await fs.writeFile(GLOBAL_LOCAL, JSON.stringify(settings, null, 2), "utf-8");
+}
+
 export async function saveSettings(settings: Settings): Promise<void> {
   await fs.mkdir(GLOBAL_DIR, { recursive: true });
   await fs.writeFile(GLOBAL_SETTINGS, JSON.stringify(settings, null, 2), "utf-8");

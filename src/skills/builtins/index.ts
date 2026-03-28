@@ -54,17 +54,111 @@ Do not push. Do not skip hooks (--no-verify).`,
   },
   {
     name: "init",
-    description: "Generate CLAUDE.md for the current project",
+    description: "Generate AGENTS.md for the current project",
     source: "builtin",
-    promptTemplate: `Generate a CLAUDE.md file for this project. Follow these steps:
+    promptTemplate: `Generate an AGENTS.md file for this project. Follow these steps:
 
 1. Read the project structure (package.json, README, src/ layout)
 2. Identify the tech stack, build system, and testing framework
-3. Generate a concise CLAUDE.md with:
+3. Generate a concise AGENTS.md with:
    - Project overview (1-2 sentences)
    - Key commands (build, test, lint)
    - Code conventions and patterns
    - Important file locations
-4. Write the file to CLAUDE.md in the project root`,
+4. Write the file to AGENTS.md in the project root`,
+  },
+  {
+    name: "simplify",
+    description: "Review changed code for reuse, quality, and efficiency, then fix any issues found",
+    source: "builtin",
+    promptTemplate: `Review the recently changed code for opportunities to simplify and improve. Follow these steps:
+
+1. Run \`git diff\` to see current changes, or \`git diff HEAD~1\` if nothing is staged
+2. For each changed file, analyze:
+   - Code duplication — can anything be reused or consolidated?
+   - Unnecessary complexity — can the logic be simplified?
+   - Dead code — are there unused imports, variables, or functions?
+   - Efficiency — are there obvious performance improvements?
+   - Consistency — does the code follow the patterns used elsewhere in the project?
+3. Apply fixes directly using Edit — don't just suggest, actually make the changes
+4. After fixing, run any available test commands to verify nothing is broken
+5. Summarize what was simplified and why`,
+  },
+  {
+    name: "loop",
+    description: "Run a prompt or slash command on a recurring interval (e.g. /loop 5m /foo, defaults to 10m)",
+    source: "builtin",
+    trigger: "user wants to set up a recurring task, poll for status, or run something repeatedly on an interval",
+    promptTemplate: `Set up a recurring execution loop. Parse the user's request: {{args}}
+
+Expected format: /loop [interval] [command or prompt]
+- interval: e.g. "5m", "30s", "1h" (default: 10m)
+- command: a slash command like /commit or a natural language prompt
+
+Create a script that:
+1. Runs the specified command/prompt at the given interval
+2. Logs each execution with timestamp
+3. Can be stopped with Ctrl+C
+4. Shows a countdown between executions
+
+Use Bash to set up and run the loop.`,
+  },
+  {
+    name: "schedule",
+    description: "Create, list, or manage scheduled tasks that run on a cron schedule",
+    source: "builtin",
+    trigger: "user wants to schedule a recurring task, set up a cron job, or manage scheduled agents",
+    promptTemplate: `Help the user manage scheduled tasks. Parse: {{args}}
+
+Commands:
+- /schedule create "description" --cron "*/5 * * * *" -- command
+- /schedule list
+- /schedule delete <id>
+
+For create:
+1. Parse the cron expression and command
+2. Set up a cron job using the system cron (crontab -e on Unix)
+3. Confirm the schedule and next run time
+
+For list:
+1. Show all scheduled tasks with their cron expressions and next run times
+
+For delete:
+1. Remove the specified scheduled task`,
+  },
+  {
+    name: "update-config",
+    description: "Configure Claude Code settings via settings.json. Use for hooks, permissions, and automated behaviors",
+    source: "builtin",
+    trigger: "user wants to configure settings, add hooks, change permissions, or set up automated behaviors",
+    promptTemplate: `Help the user update their Claude Code configuration. Parse: {{args}}
+
+Settings files (4-level hierarchy):
+- ~/.clio/settings.json (global)
+- ~/.clio/settings.local.json (global secrets, gitignored)
+- .clio/settings.json (project, committed)
+- .clio/settings.local.json (project secrets, gitignored)
+
+Available settings:
+- model: default model name
+- permissionMode: "default" | "auto" | "plan"
+- allowRules: string[] — glob patterns for auto-allowed Bash commands
+- denyRules: string[] — glob patterns for always-denied Bash commands
+- thinkingBudget: number — extended thinking token budget (0 = disabled)
+- allowOutsideCwd: boolean — allow file access outside working directory
+- hooks: { pre: HookConfig[], post: HookConfig[] } — tool execution hooks
+- mcpServers: { [name]: { command, args, env? } } — MCP server configs
+- lspServers: { [name]: { command, args, rootUri? } } — LSP server configs
+- statusBar: { fields: string[] } — status bar field configuration
+- sandbox: { allowedPaths?, deniedEnvVars?, network?, resourceLimits? }
+- autoClassifier: { enabled, safePatterns?, dangerousPatterns?, llmClassifier? }
+
+For automated behaviors ("from now on when X", "each time X", "whenever X"):
+These require hooks in settings.json. Create appropriate pre/post hooks.
+
+1. Read the relevant settings file
+2. Apply the requested changes
+3. Write back the file
+4. Confirm what was changed`,
   },
 ];
