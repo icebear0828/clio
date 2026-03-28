@@ -4,6 +4,9 @@ import * as os from "node:os";
 import type { PermissionMode, ApiFormat } from "../types.js";
 import type { HooksConfig } from "../tools/hooks.js";
 import type { StatusBarField } from "../ui/statusbar.js";
+import type { LspServerConfig } from "../plugins/types.js";
+import type { SandboxConfig } from "./sandbox.js";
+import type { LLMClassifierConfig } from "./llm-classifier.js";
 
 // ~/.clio/
 const GLOBAL_DIR = path.join(os.homedir(), ".clio");
@@ -40,6 +43,13 @@ export interface Settings {
     enabled?: boolean;
     safePatterns?: string[];
     dangerousPatterns?: string[];
+    llmClassifier?: LLMClassifierConfig;
+  };
+  lspServers?: Record<string, LspServerConfig>;
+  sandbox?: SandboxConfig;
+  teams?: {
+    maxMembers?: number;
+    maxIterationsPerMember?: number;
   };
 }
 
@@ -78,6 +88,8 @@ export function mergeSettings(base: Settings, override: Settings): Settings {
         safePatterns: [...(baseAc.safePatterns ?? []), ...(overAc.safePatterns ?? [])],
         dangerousPatterns: [...(baseAc.dangerousPatterns ?? []), ...(overAc.dangerousPatterns ?? [])],
       };
+    } else if (key === "lspServers" && typeof value === "object" && !Array.isArray(value)) {
+      result.lspServers = { ...(result.lspServers ?? {}), ...(value as Record<string, LspServerConfig>) };
     } else if (key === "hooks" && typeof value === "object") {
       const baseHooks = result.hooks ?? {};
       const overHooks = value as HooksConfig;

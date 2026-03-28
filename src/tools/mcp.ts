@@ -253,6 +253,19 @@ class McpManager {
     }
   }
 
+  async addServers(servers: Record<string, McpServerConfig>): Promise<void> {
+    // Filter out already-running servers
+    const newServers: Record<string, McpServerConfig> = {};
+    for (const [name, config] of Object.entries(servers)) {
+      if (!this.clients.has(name)) {
+        newServers[name] = config;
+      }
+    }
+    if (Object.keys(newServers).length > 0) {
+      await this.startAll(newServers);
+    }
+  }
+
   async stopAll(): Promise<void> {
     for (const [name, client] of this.clients) {
       try {

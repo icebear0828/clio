@@ -16,6 +16,10 @@ export function getCustomAgent(name: string): CustomAgentDef | undefined {
   return registry.get(name);
 }
 
+export function registerAgent(name: string, def: CustomAgentDef): void {
+  registry.set(name, def);
+}
+
 export function listCustomAgents(): string[] {
   return [...registry.keys()];
 }

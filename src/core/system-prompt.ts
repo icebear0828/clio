@@ -12,6 +12,14 @@ import {
   getOutputEfficiency,
 } from "./prompts.js";
 import { listSkills } from "../skills/index.js";
+import { getLspDiagnosticsSummary } from "../tools/lsp.js";
+
+// ── Dynamic section registration (for plugins) ──
+const extraSections: SystemPromptSection[] = [];
+
+export function registerSystemSection(section: SystemPromptSection): void {
+  extraSections.push(section);
+}
 
 function createSectionRegistry(): SystemPromptSection[] {
   const cwd = process.cwd();
@@ -55,6 +63,19 @@ function createSectionRegistry(): SystemPromptSection[] {
     { name: "environment",  cacheBreak: true, compute: getEnvironmentInfo },
     { name: "git-context",  cacheBreak: true, compute: () => loadGitContext(cwd) },
     { name: "claude-md",    cacheBreak: true, compute: () => loadClaudeMd(cwd) },
+    {
+      name: "lsp-diagnostics",
+      cacheBreak: true,
+      compute: () => {
+        const summary = getLspDiagnosticsSummary();
+        return Promise.resolve(
+          summary ? `<lsp-diagnostics>\n${summary}\n</lsp-diagnostics>` : null
+        );
+      },
+    },
+
+    // ── Plugin-registered sections ──
+    ...extraSections,
   ];
 }
 

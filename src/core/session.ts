@@ -90,6 +90,65 @@ export class SessionManager {
     return { manager, messages: data.messages, usage: data.usage };
   }
 
+  /** Search sessions for a query string. Returns matching sessions with matched snippets. */
+  static async search(
+    query: string,
+    limit = 10,
+  ): Promise<Array<{ id: string; cwd: string; model: string; updatedAt: string; messageCount: number; matches: string[] }>> {
+    await ensureDir();
+    const files = await fs.readdir(SESSIONS_DIR);
+    const lowerQuery = query.toLowerCase();
+    const results: Array<{ data: SessionData; matches: string[] }> = [];
+
+    for (const file of files) {
+      if (!file.endsWith(".json")) continue;
+      try {
+        const raw = await fs.readFile(path.join(SESSIONS_DIR, file), "utf-8");
+        const data = JSON.parse(raw) as SessionData;
+        const matches: string[] = [];
+
+        for (const msg of data.messages) {
+          if (!msg.content) continue;
+          const blocks = typeof msg.content === "string"
+            ? [msg.content]
+            : (msg.content as Array<{ type: string; text?: string }>)
+                .filter((b) => b.type === "text" && b.text)
+                .map((b) => b.text!);
+
+          for (const text of blocks) {
+            const idx = text.toLowerCase().indexOf(lowerQuery);
+            if (idx !== -1) {
+              const start = Math.max(0, idx - 40);
+              const end = Math.min(text.length, idx + query.length + 40);
+              const snippet = (start > 0 ? "..." : "") + text.slice(start, end).replace(/\n/g, " ") + (end < text.length ? "..." : "");
+              matches.push(snippet);
+              if (matches.length >= 3) break;
+            }
+          }
+          if (matches.length >= 3) break;
+        }
+
+        if (matches.length > 0) {
+          results.push({ data, matches });
+        }
+      } catch {
+        // skip corrupt files
+      }
+    }
+
+    return results
+      .sort((a, b) => b.data.updatedAt.localeCompare(a.data.updatedAt))
+      .slice(0, limit)
+      .map((r) => ({
+        id: r.data.id,
+        cwd: r.data.cwd,
+        model: r.data.model,
+        updatedAt: r.data.updatedAt,
+        messageCount: r.data.messages.length,
+        matches: r.matches,
+      }));
+  }
+
   /** List recent sessions (newest first). */
   static async list(limit = 10): Promise<Array<{ id: string; cwd: string; model: string; updatedAt: string; messageCount: number }>> {
     await ensureDir();

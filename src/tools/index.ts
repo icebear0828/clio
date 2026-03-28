@@ -8,6 +8,9 @@ import { taskStore, formatTaskList, formatTaskDetail, type TaskStatus } from "./
 import { getSkill, listSkills } from "../skills/index.js";
 import type { McpManager } from "./mcp.js";
 import type { SubAgentOptions } from "./subagent.js";
+import type { Sandbox } from "../core/sandbox.js";
+import type { LspManager } from "./lsp.js";
+import { teamRegistry, createMessageHook, type TeamMemberInput } from "./teams.js";
 
 const execAsync = promisify(exec);
 
@@ -17,9 +20,19 @@ let mcpManager: McpManager | null = null;
 
 const backgroundAgents = new Map<string, Promise<string>>();
 let bgAgentCounter = 0;
+let sandbox: Sandbox | null = null;
+let lspManager: LspManager | null = null;
 
 export function setMcpManager(manager: McpManager): void {
   mcpManager = manager;
+}
+
+export function setSandbox(s: Sandbox): void {
+  sandbox = s;
+}
+
+export function setLspManager(manager: LspManager): void {
+  lspManager = manager;
 }
 
 export function setToolContext(ctx: ToolContext): void {
@@ -34,7 +47,11 @@ export function setAllowOutsideCwd(allow: boolean): void {
   allowOutsideCwd = allow;
 }
 
-function assertInWorkspace(filePath: string): void {
+function assertInWorkspace(filePath: string, mode: "read" | "write" = "read"): void {
+  if (sandbox) {
+    sandbox.assertPathAllowed(filePath, mode);
+    return;
+  }
   if (allowOutsideCwd) return;
   const resolved = path.resolve(filePath);
   const cwd = process.cwd();
@@ -140,14 +157,14 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: "WebFetch",
-    description: "Fetches a URL and returns its content as text. Useful for reading documentation, APIs, or web pages.",
+    description: "Fetches content from a URL, converts HTML to markdown, and processes it with an AI model. Use when you need to retrieve and analyze web content. HTTP URLs are upgraded to HTTPS. Includes a 15-minute cache. When a URL redirects to a different host, the tool will inform you and provide the redirect URL — make a new request with that URL.",
     input_schema: {
       type: "object" as const,
       properties: {
-        url: { type: "string", description: "The URL to fetch" },
-        max_length: { type: "number", description: "Max characters to return (default 50000)" },
+        url: { type: "string", description: "The URL to fetch content from" },
+        prompt: { type: "string", description: "The prompt to run on the fetched content" },
       },
-      required: ["url"],
+      required: ["url", "prompt"],
     },
   },
   {
@@ -169,12 +186,13 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: "WebSearch",
-    description: "Searches the web using DuckDuckGo and returns results with titles, URLs, and snippets.",
+    description: "Searches the web and returns results with titles, URLs, and snippets. Use for accessing information beyond the knowledge cutoff. After answering, include a Sources section listing relevant URLs as markdown hyperlinks.",
     input_schema: {
       type: "object" as const,
       properties: {
-        query: { type: "string", description: "The search query" },
-        limit: { type: "number", description: "Max results to return (default 5)" },
+        query: { type: "string", description: "The search query to use" },
+        allowed_domains: { type: "array", items: { type: "string" }, description: "Only include results from these domains" },
+        blocked_domains: { type: "array", items: { type: "string" }, description: "Never include results from these domains" },
       },
       required: ["query"],
     },
@@ -277,12 +295,64 @@ export const TOOL_DEFINITIONS = [
       required: ["query"],
     },
   },
+  {
+    name: "TeamCreate",
+    description: "Create a team of agents to collaborate on a task. Each member runs as a background sub-agent with inter-agent messaging.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        name: { type: "string", description: "Team name" },
+        task: { type: "string", description: "The team's overall task" },
+        members: {
+          type: "array",
+          description: "Team members",
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string", description: "Member name" },
+              role: { type: "string", description: "Member role description" },
+              prompt: { type: "string", description: "Initial task for this member" },
+              agent_type: { type: "string", description: "Custom agent type" },
+              model: { type: "string", description: "Model override" },
+            },
+            required: ["name", "prompt"],
+          },
+        },
+      },
+      required: ["name", "task", "members"],
+    },
+  },
+  {
+    name: "TeamDelete",
+    description: "Delete a team and abort all its running agents.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        id: { type: "string", description: "The team ID (e.g. team_1)" },
+      },
+      required: ["id"],
+    },
+  },
+  {
+    name: "SendMessage",
+    description: "Send a message to a team member or broadcast to all members. Used for inter-agent coordination.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        team_id: { type: "string", description: "The team ID" },
+        to: { type: "string", description: "Member name or 'all' for broadcast" },
+        content: { type: "string", description: "Message content" },
+      },
+      required: ["team_id", "to", "content"],
+    },
+  },
 ];
 
 export const DEFERRED_TOOL_NAMES = new Set([
   "WebFetch", "WebSearch",
   "EnterPlanMode", "ExitPlanMode",
   "TaskCreate", "TaskUpdate", "TaskList", "TaskGet",
+  "TeamCreate", "TeamDelete", "SendMessage",
 ]);
 
 // ── Tool execution ──
@@ -305,11 +375,11 @@ export async function executeTool(
     case "Grep":
       return toolGrep(input as unknown as GrepInput);
     case "WebFetch":
-      return toolWebFetch(input as { url: string; max_length?: number });
+      return toolWebFetch(input as { url: string; prompt: string });
     case "Agent":
       return toolAgent(input as { prompt: string; description?: string; subagent_type?: string; isolation?: "worktree"; run_in_background?: boolean; name?: string; model?: string });
     case "WebSearch":
-      return toolWebSearch(input as { query: string; limit?: number });
+      return toolWebSearch(input as { query: string; allowed_domains?: string[]; blocked_domains?: string[] });
     case "AskUserQuestion":
       return toolAskUser(input as { question: string });
     case "EnterPlanMode":
@@ -328,6 +398,12 @@ export async function executeTool(
       return toolSkill(input as { skill: string; args?: string });
     case "ToolSearch":
       return toolToolSearch(input as { query: string; max_results?: number });
+    case "TeamCreate":
+      return toolTeamCreate(input as { name: string; task: string; members: TeamMemberInput[] });
+    case "TeamDelete":
+      return toolTeamDelete(input as { id: string });
+    case "SendMessage":
+      return toolSendMessage(input as { team_id: string; to: string; content: string });
     default:
       if (mcpManager?.isMcpTool(name)) {
         return mcpManager.callTool(name, input);
@@ -337,8 +413,12 @@ export async function executeTool(
 }
 
 async function toolRead(input: { file_path: string; offset?: number; limit?: number }): Promise<string> {
-  assertInWorkspace(input.file_path);
+  assertInWorkspace(input.file_path, "read");
   const content = await fs.readFile(input.file_path, "utf-8");
+
+  // Notify LSP servers
+  if (lspManager) lspManager.notifyFileOpened(input.file_path, content);
+
   const lines = content.split("\n");
   const start = Math.max(0, (input.offset ?? 1) - 1);
   const end = input.limit ? start + input.limit : lines.length;
@@ -350,14 +430,17 @@ async function toolRead(input: { file_path: string; offset?: number; limit?: num
 }
 
 async function toolWrite(input: { file_path: string; content: string }): Promise<string> {
-  assertInWorkspace(input.file_path);
+  assertInWorkspace(input.file_path, "write");
   await fs.mkdir(path.dirname(input.file_path), { recursive: true });
   await fs.writeFile(input.file_path, input.content, "utf-8");
+
+  if (lspManager) lspManager.notifyFileChanged(input.file_path, input.content);
+
   return `Successfully wrote ${input.content.split("\n").length} lines to ${input.file_path}`;
 }
 
 async function toolEdit(input: { file_path: string; old_string: string; new_string: string }): Promise<string> {
-  assertInWorkspace(input.file_path);
+  assertInWorkspace(input.file_path, "write");
   const content = await fs.readFile(input.file_path, "utf-8");
   const idx = content.indexOf(input.old_string);
   if (idx === -1) {
@@ -369,6 +452,9 @@ async function toolEdit(input: { file_path: string; old_string: string; new_stri
   }
   const updated = content.slice(0, idx) + input.new_string + content.slice(idx + input.old_string.length);
   await fs.writeFile(input.file_path, updated, "utf-8");
+
+  if (lspManager) lspManager.notifyFileChanged(input.file_path, updated);
+
   return `Successfully edited ${input.file_path}`;
 }
 
@@ -383,13 +469,23 @@ function truncateOutput(text: string, maxLines = 500): string {
 
 async function toolBash(input: { command: string; timeout?: number }): Promise<string> {
   const timeout = input.timeout ?? 120_000;
+
+  // Sandbox validation
+  if (sandbox) {
+    const validation = sandbox.validateCommand(input.command);
+    if (!validation.allowed) {
+      throw new Error(`Sandbox blocked command: ${validation.reason}`);
+    }
+  }
+
+  const execOpts = sandbox
+    ? (() => { const o = sandbox.buildExecOptions(input.command, timeout); return { timeout: o.timeout, cwd: o.cwd, maxBuffer: o.maxBuffer, env: o.env, shell: o.shell }; })()
+    : { timeout, cwd: process.cwd(), maxBuffer: 10 * 1024 * 1024, shell: process.platform === "win32" ? "bash" : "/bin/bash" };
+
+  const command = sandbox ? sandbox.buildExecOptions(input.command, timeout).command : input.command;
+
   try {
-    const { stdout, stderr } = await execAsync(input.command, {
-      timeout,
-      cwd: process.cwd(),
-      maxBuffer: 10 * 1024 * 1024,
-      shell: process.platform === "win32" ? "bash" : "/bin/bash",
-    });
+    const { stdout, stderr } = await execAsync(command, execOpts);
     let result = stdout;
     if (stderr) result += (result ? "\n" : "") + `STDERR:\n${stderr}`;
     return truncateOutput(result || "(no output)");
@@ -572,40 +668,151 @@ async function toolGrep(input: GrepInput): Promise<string> {
   return result || "No matches found";
 }
 
-async function toolWebFetch(input: { url: string; max_length?: number }): Promise<string> {
-  const maxLen = input.max_length ?? 50_000;
+// ── WebFetch cache (15 min TTL) ──
+const webFetchCache = new Map<string, { content: string; timestamp: number }>();
+const CACHE_TTL = 15 * 60 * 1000;
 
-  const response = await fetch(input.url, {
-    headers: { "User-Agent": "Mozilla/5.0 (compatible; clio-cli/0.1)" },
-    signal: AbortSignal.timeout(15_000),
-    redirect: "follow",
+function htmlToMarkdown(html: string): string {
+  let md = html;
+  // Remove script/style/nav/footer
+  md = md.replace(/<(script|style|nav|footer|header|aside)[^>]*>[\s\S]*?<\/\1>/gi, "");
+  // Headings
+  md = md.replace(/<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi, (_, level, text) => {
+    const clean = text.replace(/<[^>]*>/g, "").trim();
+    return "\n" + "#".repeat(Number(level)) + " " + clean + "\n";
   });
+  // Links
+  md = md.replace(/<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, (_, href, text) => {
+    const clean = text.replace(/<[^>]*>/g, "").trim();
+    return `[${clean}](${href})`;
+  });
+  // Images
+  md = md.replace(/<img[^>]*alt="([^"]*)"[^>]*src="([^"]*)"[^>]*\/?>/gi, "![$1]($2)");
+  md = md.replace(/<img[^>]*src="([^"]*)"[^>]*\/?>/gi, "![]($1)");
+  // Bold/italic
+  md = md.replace(/<(strong|b)[^>]*>([\s\S]*?)<\/\1>/gi, "**$2**");
+  md = md.replace(/<(em|i)[^>]*>([\s\S]*?)<\/\1>/gi, "*$2*");
+  // Code blocks
+  md = md.replace(/<pre[^>]*><code[^>]*>([\s\S]*?)<\/code><\/pre>/gi, "\n```\n$1\n```\n");
+  md = md.replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, "`$1`");
+  // Lists
+  md = md.replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, "- $1\n");
+  // Paragraphs / line breaks
+  md = md.replace(/<br\s*\/?>/gi, "\n");
+  md = md.replace(/<\/p>/gi, "\n\n");
+  md = md.replace(/<p[^>]*>/gi, "");
+  // Blockquotes
+  md = md.replace(/<blockquote[^>]*>([\s\S]*?)<\/blockquote>/gi, (_, text) =>
+    text.trim().split("\n").map((l: string) => "> " + l).join("\n")
+  );
+  // Strip remaining tags
+  md = md.replace(/<[^>]+>/g, "");
+  // Decode entities
+  md = md.replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#x27;/g, "'").replace(/&#39;/g, "'");
+  // Collapse whitespace
+  md = md.replace(/\n{3,}/g, "\n\n").replace(/[ \t]+/g, " ").trim();
+  return md;
+}
+
+async function toolWebFetch(input: { url: string; prompt: string }): Promise<string> {
+  if (!toolContext) throw new Error("WebFetch requires tool context");
+
+  // Upgrade HTTP to HTTPS
+  let url = input.url;
+  if (url.startsWith("http://")) {
+    url = "https://" + url.slice(7);
+  }
+
+  // Check cache
+  const cached = webFetchCache.get(url);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+    return processWithModel(cached.content, input.prompt);
+  }
+  // Clean expired entries
+  for (const [key, val] of webFetchCache) {
+    if (Date.now() - val.timestamp >= CACHE_TTL) webFetchCache.delete(key);
+  }
+
+  const response = await fetch(url, {
+    headers: { "User-Agent": "Mozilla/5.0 (compatible; clio-cli/1.0)" },
+    signal: AbortSignal.timeout(15_000),
+    redirect: "manual",
+  });
+
+  // Detect cross-host redirect
+  if ([301, 302, 303, 307, 308].includes(response.status)) {
+    const location = response.headers.get("location");
+    if (location) {
+      const originalHost = new URL(url).host;
+      try {
+        const redirectHost = new URL(location, url).host;
+        if (redirectHost !== originalHost) {
+          const fullUrl = new URL(location, url).href;
+          return `The URL redirected to a different host: ${fullUrl}\nPlease make a new WebFetch request with this URL.`;
+        }
+      } catch { /* fall through to follow redirect manually */ }
+      // Same-host redirect — follow it
+      const followResp = await fetch(new URL(location, url).href, {
+        headers: { "User-Agent": "Mozilla/5.0 (compatible; clio-cli/1.0)" },
+        signal: AbortSignal.timeout(15_000),
+        redirect: "follow",
+      });
+      if (!followResp.ok) throw new Error(`HTTP ${followResp.status}: ${followResp.statusText}`);
+      return processPage(followResp, url, input.prompt);
+    }
+  }
 
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}: ${response.statusText}`);
   }
 
+  return processPage(response, url, input.prompt);
+}
+
+async function processPage(response: Response, url: string, prompt: string): Promise<string> {
   const contentType = response.headers.get("content-type") ?? "";
   const raw = await response.text();
 
-  // For HTML, strip tags to extract readable text
+  let content: string;
   if (contentType.includes("text/html")) {
-    const text = raw
-      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
-      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
-      .replace(/<[^>]+>/g, " ")
-      .replace(/&nbsp;/g, " ")
-      .replace(/&amp;/g, "&")
-      .replace(/&lt;/g, "<")
-      .replace(/&gt;/g, ">")
-      .replace(/&quot;/g, '"')
-      .replace(/&#39;/g, "'")
-      .replace(/\s+/g, " ")
-      .trim();
-    return text.slice(0, maxLen);
+    content = htmlToMarkdown(raw);
+  } else {
+    content = raw;
   }
 
-  return raw.slice(0, maxLen);
+  // Limit content size for model processing
+  content = content.slice(0, 100_000);
+  webFetchCache.set(url, { content, timestamp: Date.now() });
+
+  return processWithModel(content, prompt);
+}
+
+async function processWithModel(content: string, prompt: string): Promise<string> {
+  if (!toolContext) throw new Error("WebFetch requires tool context");
+  const { apiRequest } = await import("../core/client.js");
+
+  const config: import("../types.js").Config = {
+    ...toolContext.config,
+    model: "claude-haiku-4-5-20251001",
+    thinkingBudget: 0,
+  };
+
+  const result = await apiRequest(config, {
+    model: config.model,
+    max_tokens: 4096,
+    system: "You are a helpful assistant that processes web page content. Respond based on the page content and the user's prompt. Be concise and accurate.",
+    messages: [{
+      role: "user",
+      content: `<page_content>\n${content.slice(0, 80_000)}\n</page_content>\n\n${prompt}`,
+    }],
+  });
+
+  return result.content
+    .filter((b) => b.type === "text" && b.text)
+    .map((b) => b.text!)
+    .join("")
+    .trim();
 }
 
 async function toolAgent(input: {
@@ -697,8 +904,8 @@ async function toolAgent(input: {
   return executeSubAgent(config, input.prompt, options);
 }
 
-async function toolWebSearch(input: { query: string; limit?: number }): Promise<string> {
-  const limit = input.limit ?? 5;
+async function toolWebSearch(input: { query: string; allowed_domains?: string[]; blocked_domains?: string[] }): Promise<string> {
+  const maxResults = 10;
   const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(input.query)}`;
   const resp = await fetch(url, {
     headers: { "User-Agent": "Mozilla/5.0 (compatible; clio-cli/1.0)" },
@@ -714,18 +921,31 @@ async function toolWebSearch(input: { query: string; limit?: number }): Promise<
   const snippetRe = /<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/i;
 
   let match: RegExpExecArray | null;
-  while ((match = blockRe.exec(html)) !== null && results.length < limit) {
+  while ((match = blockRe.exec(html)) !== null && results.length < maxResults) {
     const block = match[1];
     const titleMatch = titleRe.exec(block);
     const snippetMatch = snippetRe.exec(block);
-    if (titleMatch) {
-      const href = titleMatch[1];
-      const title = titleMatch[2].replace(/<[^>]*>/g, "").trim();
-      const snippet = snippetMatch
-        ? snippetMatch[1].replace(/<[^>]*>/g, "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#x27;/g, "'").trim()
-        : "";
-      results.push(`${results.length + 1}. ${title}\n   ${href}\n   ${snippet}`);
+    if (!titleMatch) continue;
+
+    const href = titleMatch[1];
+    const title = titleMatch[2].replace(/<[^>]*>/g, "").trim();
+
+    // Domain filtering
+    let domain: string;
+    try { domain = new URL(href).hostname; } catch { continue; }
+
+    if (input.allowed_domains?.length) {
+      if (!input.allowed_domains.some(d => domain === d || domain.endsWith("." + d))) continue;
     }
+    if (input.blocked_domains?.length) {
+      if (input.blocked_domains.some(d => domain === d || domain.endsWith("." + d))) continue;
+    }
+
+    const snippet = snippetMatch
+      ? snippetMatch[1].replace(/<[^>]*>/g, "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#x27;/g, "'").replace(/&#39;/g, "'").trim()
+      : "";
+
+    results.push(`${results.length + 1}. [${title}](${href})\n   ${snippet}`);
   }
 
   if (results.length === 0) return "No results found.";
@@ -808,6 +1028,89 @@ function toolToolSearch(input: { query: string; max_results?: number }): string 
   ).join("\n");
 
   return `<functions>\n${functions}\n</functions>`;
+}
+
+async function toolTeamCreate(input: { name: string; task: string; members: TeamMemberInput[] }): Promise<string> {
+  if (!toolContext) throw new Error("TeamCreate requires tool context");
+
+  const team = teamRegistry.create(input.name, input.task, input.members);
+  const config = toolContext.config;
+  const { executeSubAgent } = await import("./subagent.js");
+
+  for (const memberInput of input.members) {
+    const member = team.members.get(memberInput.name)!;
+    teamRegistry.updateMemberStatus(team.id, memberInput.name, "running");
+
+    const abort = new AbortController();
+    teamRegistry.setMemberAbort(team.id, memberInput.name, abort);
+
+    const messageHook = createMessageHook(team.id, memberInput.name);
+
+    let options: SubAgentOptions = {
+      signal: abort.signal,
+      messageHook,
+    };
+
+    if (memberInput.agent_type) {
+      const { getCustomAgent } = await import("../commands/custom-agents.js");
+      const def = getCustomAgent(memberInput.agent_type);
+      if (def) {
+        options = {
+          ...options,
+          systemPromptOverride: def.systemPrompt,
+          allowedTools: def.allowedTools,
+          model: def.model,
+          maxIterations: def.maxIterations,
+        };
+      }
+    }
+
+    if (memberInput.model) {
+      options.model = memberInput.model;
+    }
+
+    const systemPreamble = [
+      `You are "${memberInput.name}" on team "${team.name}".`,
+      memberInput.role ? `Your role: ${memberInput.role}` : "",
+      `Team task: ${team.task}`,
+      `Other members: ${[...team.members.keys()].filter(n => n !== memberInput.name).join(", ")}`,
+      "",
+      "You can use the SendMessage tool to communicate with teammates.",
+      "Messages from teammates will appear as team-messages in the conversation.",
+    ].filter(Boolean).join("\n");
+
+    const fullPrompt = `${systemPreamble}\n\nYour task: ${memberInput.prompt}`;
+
+    // Launch as background
+    const promise = executeSubAgent(config, fullPrompt, options)
+      .then((result) => {
+        teamRegistry.updateMemberStatus(team.id, memberInput.name, "completed", result);
+        process.stderr.write(`\n  [team "${team.name}": ${memberInput.name} completed]\n`);
+        return result;
+      })
+      .catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        teamRegistry.updateMemberStatus(team.id, memberInput.name, "failed", msg);
+        process.stderr.write(`\n  [team "${team.name}": ${memberInput.name} failed: ${msg}]\n`);
+        return `Error: ${msg}`;
+      });
+
+    backgroundAgents.set(`${team.id}:${memberInput.name}`, promise);
+  }
+
+  return teamRegistry.formatTeamStatus(team);
+}
+
+async function toolTeamDelete(input: { id: string }): Promise<string> {
+  const team = teamRegistry.get(input.id);
+  const name = team.name;
+  teamRegistry.delete(input.id);
+  return `Deleted team "${name}" (${input.id})`;
+}
+
+async function toolSendMessage(input: { team_id: string; to: string; content: string }): Promise<string> {
+  teamRegistry.sendMessage(input.team_id, "orchestrator", input.to, input.content);
+  return `Message sent to ${input.to === "all" ? "all members" : input.to} in team ${input.team_id}`;
 }
 
 export function buildToolsForRequest(unlockedDeferred: Set<string>): typeof TOOL_DEFINITIONS {

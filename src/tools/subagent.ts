@@ -13,6 +13,7 @@ export interface SubAgentOptions {
   maxIterations?: number;
   workdir?: string;
   signal?: AbortSignal;
+  messageHook?: () => Promise<string | null>;
 }
 
 interface StreamedBlock {
@@ -186,6 +187,15 @@ export async function executeSubAgent(
     }
 
     messages.push({ role: "user", content: toolResults });
+
+    // Check for inter-agent messages
+    if (options?.messageHook) {
+      const teamMessages = await options.messageHook();
+      if (teamMessages) {
+        // Inject team messages as a system-like user message
+        messages.push({ role: "user", content: teamMessages });
+      }
+    }
   }
 
   // Reached max iterations — return whatever text we have

@@ -1,6 +1,7 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { dim, yellow } from "../ui/render.js";
+import type { Sandbox } from "../core/sandbox.js";
 
 const execAsync = promisify(exec);
 
@@ -23,6 +24,12 @@ export interface HooksConfig {
  * Hook commands receive env vars:
  *   CLIO_TOOL_NAME, CLIO_TOOL_INPUT (JSON), CLIO_HOOK_PHASE
  */
+let hookSandbox: Sandbox | null = null;
+
+export function setHookSandbox(s: Sandbox): void {
+  hookSandbox = s;
+}
+
 export async function runHooks(
   hooks: HooksConfig | undefined,
   phase: "pre" | "post",
@@ -32,12 +39,15 @@ export async function runHooks(
   const hookList = phase === "pre" ? hooks?.pre : hooks?.post;
   if (!hookList || hookList.length === 0) return true;
 
-  const env = {
-    ...process.env,
+  const hookExtra = {
     CLIO_TOOL_NAME: toolName,
     CLIO_TOOL_INPUT: JSON.stringify(toolInput),
     CLIO_HOOK_PHASE: phase,
   };
+
+  const env = hookSandbox
+    ? hookSandbox.buildEnvironment(hookExtra)
+    : { ...process.env, ...hookExtra };
 
   for (const hook of hookList) {
     // Check if this hook applies to the current tool

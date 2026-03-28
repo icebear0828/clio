@@ -2,6 +2,7 @@ import { stdin } from "node:process";
 import * as readline from "node:readline/promises";
 import { bold, dim } from "../ui/render.js";
 import type { PermissionMode } from "../types.js";
+import type { ClassifierResult } from "./llm-classifier.js";
 
 type ToolCategory = "safe" | "dangerous" | "write";
 
@@ -45,6 +46,7 @@ export class PermissionManager {
   private classifierEnabled = false;
   private safeBashPatterns: RegExp[] = [];
   private dangerousBashPatterns: RegExp[] = [];
+  private llmClassifier: ((toolName: string, toolInput: Record<string, unknown>) => Promise<ClassifierResult>) | null = null;
 
   private static readonly DEFAULT_SAFE_PATTERNS = [
     "git status*", "git log*", "git diff*", "git branch*", "git show*", "git remote*",
@@ -78,6 +80,10 @@ export class PermissionManager {
   constructor(private mode: PermissionMode, allowRules: string[] = [], denyRules: string[] = []) {
     this.allowPatterns = compileRules(allowRules);
     this.denyPatterns = compileRules(denyRules);
+  }
+
+  setLLMClassifier(fn: (toolName: string, toolInput: Record<string, unknown>) => Promise<ClassifierResult>): void {
+    this.llmClassifier = fn;
   }
 
   setAutoClassifier(config: AutoClassifierConfig): void {
@@ -140,13 +146,28 @@ export class PermissionManager {
       if (this.safeBashPatterns.some((re) => re.test(cmd))) {
         return "allow";
       }
-      return this.promptUser(toolName);
+      // Stage 1 uncertain → try Stage 2 LLM classifier
+      return this.classifyStage2(toolName, toolInput);
     }
 
-    if (category === "write") return this.promptUser(toolName);
+    if (category === "write") {
+      return this.classifyStage2(toolName, toolInput);
+    }
 
     if (toolName === "Agent") return "allow";
 
+    return this.classifyStage2(toolName, toolInput);
+  }
+
+  private async classifyStage2(
+    toolName: string,
+    toolInput: Record<string, unknown>
+  ): Promise<"allow" | "deny"> {
+    if (!this.llmClassifier) return this.promptUser(toolName);
+
+    const result = await this.llmClassifier(toolName, toolInput);
+    if (result === "allow") return "allow";
+    if (result === "deny") return "deny";
     return this.promptUser(toolName);
   }
 

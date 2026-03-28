@@ -14,8 +14,12 @@ import { PermissionManager } from "./core/permissions.js";
 import { InputReader } from "./ui/input.js";
 import { loadKeybindings } from "./ui/keybindings.js";
 import { loadSettings, getSettingsInfo, type Settings } from "./core/settings.js";
-import { setAllowOutsideCwd, setToolContext, setMcpManager } from "./tools/index.js";
+import { setAllowOutsideCwd, setToolContext, setMcpManager, setSandbox, setLspManager } from "./tools/index.js";
 import { McpManager, setGlobalMcpManager } from "./tools/mcp.js";
+import { LspManager, setGlobalLspManager } from "./tools/lsp.js";
+import { Sandbox } from "./core/sandbox.js";
+import { createLLMClassifier } from "./core/llm-classifier.js";
+import { setHookSandbox } from "./tools/hooks.js";
 import { taskStore } from "./tools/tasks.js";
 import { loadCustomAgents, listCustomAgents } from "./commands/custom-agents.js";
 import { loadSkills } from "./skills/loader.js";
@@ -25,8 +29,16 @@ import { StatusBar } from "./ui/statusbar.js";
 import { FileCompleter, resolveFileReferences } from "./ui/file-completions.js";
 import { CheckpointManager } from "./tools/checkpoint.js";
 import { SectionCache } from "./core/section-cache.js";
+import { initPlugins } from "./plugins/index.js";
 import { stdin } from "node:process";
 import type { ApiFormat, Config, Message, PermissionMode, UsageStats } from "./types.js";
+
+type OutputFormat = "text" | "json";
+
+interface PrintModeConfig {
+  prompt: string;
+  outputFormat: OutputFormat;
+}
 
 interface EscapeHandler {
   cleanup: () => void;
@@ -120,7 +132,7 @@ async function promptRollback(cm: CheckpointManager): Promise<boolean> {
 
 const VALID_MODES: PermissionMode[] = ["default", "auto", "plan"];
 
-function loadConfig(settings: Settings): { config: Config; resumeId?: string; forkSessionId?: string; cliAllowRules: string[] } {
+function loadConfig(settings: Settings): { config: Config; resumeId?: string; forkSessionId?: string; cliAllowRules: string[]; printMode?: PrintModeConfig } {
   const config: Config = {
     apiUrl: settings.apiUrl ?? process.env.CLIO_API_URL ?? process.env.ANTHROPIC_BASE_URL ?? "https://api.anthropic.com",
     apiKey: settings.apiKey ?? process.env.CLIO_API_KEY ?? process.env.ANTHROPIC_API_KEY ?? "",
@@ -132,6 +144,8 @@ function loadConfig(settings: Settings): { config: Config; resumeId?: string; fo
   let resumeId: string | undefined;
   let forkSessionId: string | undefined;
   const cliAllowRules: string[] = [];
+  let printPrompt: string | undefined;
+  let outputFormat: OutputFormat = "text";
 
   // CLI args override settings file
   const args = process.argv.slice(2);
@@ -145,6 +159,8 @@ function loadConfig(settings: Settings): { config: Config; resumeId?: string; fo
     else if (args[i] === "--api-format" && args[i + 1]) config.apiFormat = args[++i] as ApiFormat;
     else if (args[i] === "--allow" && args[i + 1]) cliAllowRules.push(args[++i]);
     else if (args[i] === "--allow-outside-cwd") setAllowOutsideCwd(true);
+    else if ((args[i] === "-p" || args[i] === "--print") && args[i + 1]) printPrompt = args[++i];
+    else if (args[i] === "--output-format" && args[i + 1]) outputFormat = args[++i] as OutputFormat;
     else if (args[i] === "--permission-mode" && args[i + 1]) {
       const mode = args[++i] as PermissionMode;
       if (!VALID_MODES.includes(mode)) {
@@ -159,13 +175,17 @@ function loadConfig(settings: Settings): { config: Config; resumeId?: string; fo
       process.exit(0);
     } else if (args[i] === "--help" || args[i] === "-h") {
       console.log(`Usage: clio [options]
+       clio -p "prompt"          Non-interactive mode
+       echo "prompt" | clio -p   Pipe mode (reads stdin)
 
 Options:
+  -p, --print <prompt>     Run non-interactively: execute prompt, print result, exit
+  --output-format <fmt>    Output format for -p mode: text | json (default: text)
   --api-url <url>          API base URL (env: CLIO_API_URL or ANTHROPIC_BASE_URL)
   --api-key <key>          API key    (env: CLIO_API_KEY or ANTHROPIC_API_KEY)
   --model   <model>        Model name (env: CLIO_MODEL, default: claude-sonnet-4-20250514)
   --resume  <id>           Resume a previous session
-  --fork-session <id>    Fork from an existing session
+  --fork-session <id>      Fork from an existing session
   --thinking <tokens>      Enable extended thinking with budget (e.g. 10000)
   --api-format <fmt>       API format: anthropic | openai (default: anthropic)
   --permission-mode <mode> Permission mode: default, auto, plan (default: default)
@@ -183,7 +203,73 @@ Options:
     process.exit(1);
   }
 
-  return { config, resumeId, forkSessionId, cliAllowRules };
+  // Build printMode if -p was given or stdin is piped
+  let printMode: PrintModeConfig | undefined;
+  if (printPrompt !== undefined) {
+    printMode = { prompt: printPrompt, outputFormat };
+  }
+
+  return { config, resumeId, forkSessionId, cliAllowRules, printMode };
+}
+
+async function readStdin(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stdin) {
+    chunks.push(chunk as Buffer);
+  }
+  return Buffer.concat(chunks).toString("utf-8").trim();
+}
+
+async function runPrintMode(
+  printMode: PrintModeConfig,
+  config: Config,
+  settings: Settings,
+  permissionManager: PermissionManager,
+): Promise<void> {
+  // Read from stdin pipe if prompt is empty
+  let prompt = printMode.prompt;
+  if (!prompt && !stdin.isTTY) {
+    prompt = await readStdin();
+  }
+  if (!prompt) {
+    console.error(red("Error: no prompt provided. Use -p \"prompt\" or pipe via stdin."));
+    process.exit(1);
+  }
+
+  const messages: Message[] = [{ role: "user", content: prompt }];
+  const sectionCache = new SectionCache();
+
+  // In print mode, tool output goes to stderr; only final text to stdout
+  const usage = await runAgentLoop(config, messages, permissionManager, undefined, settings.hooks, undefined, sectionCache);
+
+  // Extract final assistant text
+  const lastMsg = messages[messages.length - 1];
+  let resultText = "";
+  if (lastMsg?.role === "assistant") {
+    if (typeof lastMsg.content === "string") {
+      resultText = lastMsg.content;
+    } else {
+      resultText = lastMsg.content
+        .filter((b) => b.type === "text")
+        .map((b) => b.text ?? "")
+        .join("");
+    }
+  }
+
+  if (printMode.outputFormat === "json") {
+    const output = {
+      result: resultText,
+      usage: {
+        input_tokens: usage.inputTokens,
+        output_tokens: usage.outputTokens,
+      },
+      model: config.model,
+      num_turns: messages.filter((m) => m.role === "assistant").length,
+    };
+    // JSON output goes to stdout, bypassing any markdown rendering
+    process.stdout.write(JSON.stringify(output, null, 2) + "\n");
+  }
+  // text format: runAgentLoop already streamed text to stdout via MarkdownRenderer
 }
 
 async function main(): Promise<void> {
@@ -191,13 +277,25 @@ async function main(): Promise<void> {
   await loadKeybindings();
   await loadCustomAgents();
   await loadSkills();
-  const { config, resumeId, forkSessionId, cliAllowRules } = loadConfig(settings);
+
+  // Load plugins — injects skills/agents/commands, collects hooks/MCP/LSP
+  const pluginContribs = await initPlugins(settings);
+
+  const { config, resumeId, forkSessionId, cliAllowRules, printMode } = loadConfig(settings);
 
   // Merge allow rules: settings file + CLI flags
   const allowRules = [...(settings.allowRules ?? []), ...cliAllowRules];
 
   // Apply workspace restriction setting
   if (settings.allowOutsideCwd) setAllowOutsideCwd(true);
+
+  // Initialize sandbox
+  if (settings.sandbox) {
+    const sb = new Sandbox(settings.sandbox, process.cwd());
+    setSandbox(sb);
+    setHookSandbox(sb);
+  }
+
   const denyRules = [...(settings.denyRules ?? [])];
   const permissionManager = new PermissionManager(config.permissionMode, allowRules, denyRules);
 
@@ -207,16 +305,67 @@ async function main(): Promise<void> {
       safePatterns: settings.autoClassifier.safePatterns,
       dangerousPatterns: settings.autoClassifier.dangerousPatterns,
     });
+
+    if (settings.autoClassifier.llmClassifier?.enabled) {
+      const messages: Message[] = [];
+      const classifier = createLLMClassifier(
+        config,
+        settings.autoClassifier.llmClassifier,
+        () => {
+          // Extract recent context from last few messages
+          const recent = messages.slice(-4);
+          return recent
+            .map((m) => {
+              if (typeof m.content === "string") return m.content.slice(0, 500);
+              return "(tool interaction)";
+            })
+            .join("\n");
+        },
+      );
+      permissionManager.setLLMClassifier(classifier);
+    }
   }
 
-  // Start MCP servers
+  // Merge plugin hooks into settings
+  if (pluginContribs.hooks.pre?.length || pluginContribs.hooks.post?.length) {
+    settings.hooks = {
+      pre: [...(settings.hooks?.pre ?? []), ...(pluginContribs.hooks.pre ?? [])],
+      post: [...(settings.hooks?.post ?? []), ...(pluginContribs.hooks.post ?? [])],
+    };
+  }
+
+  // Start MCP servers (settings + plugin contributions)
+  const allMcpServers = { ...(settings.mcpServers ?? {}), ...pluginContribs.mcpServers };
   let mcpMgr: McpManager | null = null;
-  if (settings.mcpServers && Object.keys(settings.mcpServers).length > 0) {
+  if (Object.keys(allMcpServers).length > 0) {
     mcpMgr = new McpManager();
-    await mcpMgr.startAll(settings.mcpServers);
+    await mcpMgr.startAll(allMcpServers);
     setMcpManager(mcpMgr);
     setGlobalMcpManager(mcpMgr);
   }
+  // Start LSP servers (settings + plugin contributions)
+  const allLspServers = { ...(settings.lspServers ?? {}), ...pluginContribs.lspServers };
+  let lspMgr: LspManager | null = null;
+  if (Object.keys(allLspServers).length > 0) {
+    lspMgr = new LspManager();
+    await lspMgr.startAllWithConfigs(allLspServers);
+    setLspManager(lspMgr);
+    setGlobalLspManager(lspMgr);
+  }
+
+  // ── Non-interactive print mode ──
+  if (printMode) {
+    if (!process.argv.includes("--permission-mode")) {
+      permissionManager.setMode("auto");
+      config.permissionMode = "auto";
+    }
+    setToolContext({ config, permissionControl: permissionManager });
+    await runPrintMode(printMode, config, settings, permissionManager);
+    if (mcpMgr) await mcpMgr.stopAll();
+    if (lspMgr) await lspMgr.stopAll();
+    return;
+  }
+
   const reader = new InputReader();
   const messages: Message[] = [];
   const sessionUsage: UsageStats = { inputTokens: 0, outputTokens: 0 };
@@ -282,6 +431,10 @@ async function main(): Promise<void> {
   if (mcpMgr) {
     const names = mcpMgr.getServerNames();
     console.log(`  ${dimCyan("│")} ${dim("mcp")}       ${dim(names.join(", "))}`);
+  }
+  if (lspMgr) {
+    const names = lspMgr.getServerNames();
+    console.log(`  ${dimCyan("│")} ${dim("lsp")}       ${dim(names.join(", "))}`);
   }
   const customAgents = listCustomAgents();
   if (customAgents.length > 0) {
@@ -459,6 +612,30 @@ async function main(): Promise<void> {
       continue;
     }
 
+    if (trimmed.startsWith("/search ")) {
+      const query = trimmed.slice(8).trim();
+      if (!query) {
+        console.log(dim("  Usage: /search <query>\n"));
+        continue;
+      }
+      const results = await SessionManager.search(query);
+      if (results.length === 0) {
+        console.log(dim(`  No sessions matching "${query}".\n`));
+      } else {
+        console.log(`\n  ${bold(`Search results for "${query}":`)}`);
+        for (const r of results) {
+          const date = new Date(r.updatedAt).toLocaleString();
+          console.log(`    ${boldCyan(r.id)} ${dim(r.model)} ${dim(`${r.messageCount} msgs`)} ${dim(date)}`);
+          console.log(`         ${dim(r.cwd)}`);
+          for (const m of r.matches) {
+            console.log(`         ${dim("›")} ${m}`);
+          }
+        }
+        console.log(dim(`\n  Resume with: --resume <id>\n`));
+      }
+      continue;
+    }
+
     if (trimmed === "/sessions") {
       const list = await SessionManager.list();
       if (list.length === 0) {
@@ -625,6 +802,7 @@ async function main(): Promise<void> {
     /model [m]    Show or switch model
     /pr           Generate and create pull request
     /review       Code review current changes
+    /search <q>   Search conversation history
     /sessions     List saved sessions
     /settings     Show config file
     /theme [name] Switch theme (default, minimal, plain)
@@ -792,9 +970,12 @@ async function main(): Promise<void> {
     console.log(); // blank line after response
   }
 
-  // Shutdown MCP servers
+  // Shutdown MCP & LSP servers
   if (mcpMgr) {
     await mcpMgr.stopAll();
+  }
+  if (lspMgr) {
+    await lspMgr.stopAll();
   }
 
   // Save on exit

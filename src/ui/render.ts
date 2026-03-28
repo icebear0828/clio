@@ -124,7 +124,9 @@ export function renderToolCall(name: string, input: Record<string, unknown>): vo
     }
     case "WebFetch": {
       const url = (input.url as string) ?? "";
-      display = `${dim("Fetch")} ${cyan(url)}`;
+      const prompt = (input.prompt as string) ?? "";
+      const shortPrompt = prompt.length > 60 ? prompt.slice(0, 57) + "..." : prompt;
+      display = `${dim("Fetch")} ${cyan(url)}${shortPrompt ? dim(" → ") + shortPrompt : ""}`;
       break;
     }
     case "Agent": {

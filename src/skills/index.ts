@@ -3,7 +3,8 @@ export interface SkillDefinition {
   description: string;
   trigger?: string;
   promptTemplate: string;
-  source: "builtin" | "global" | "project";
+  source: "builtin" | "global" | "project" | "plugin";
+  pluginName?: string;
 }
 
 const registry = new Map<string, SkillDefinition>();
