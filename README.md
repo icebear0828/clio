@@ -1,35 +1,53 @@
 # c2a — Claude Code CLI
 
-A Claude Code clone that runs in your terminal. Connects to the Anthropic API (or any compatible endpoint) and provides an interactive agentic coding assistant with local tool execution.
+A feature-rich Claude Code clone that runs in your terminal. Connects to the Anthropic API (or any compatible endpoint) and provides an interactive agentic coding assistant with local tool execution.
+
+28 source files, ~5900 lines of TypeScript. Zero external runtime dependencies beyond `fast-glob`.
 
 ## Quick Start
 
 ```bash
+# Install dependencies
+npm install
+
 # Set your API key
 export ANTHROPIC_API_KEY=sk-ant-xxx
 
 # Run directly (no build needed)
 cd your-project
-npx tsx /path/to/apps/cli/src/index.ts
+npx tsx /path/to/c2a/src/index.ts
 
 # Or build first
-pnpm build
+npx tsc
 node dist/index.js
 ```
 
 ## Features
 
 - **Agent Loop** — Multi-turn tool calling: Claude reads files, writes code, runs commands, iterates until done
-- **7 Tools** — Read, Write, Edit, Bash, Glob, Grep, WebFetch — all executed locally
-- **Streaming** — Real-time markdown rendering with code blocks, headers, lists, inline formatting
-- **Permissions** — Three modes (default/auto/plan), Y/n/a prompts, regex allow rules
-- **Context** — Auto-loads CLAUDE.md files + git branch/status/commits into system prompt
-- **Sessions** — Auto-save conversations, resume with `--resume <id>`
+- **16 Tools** — Read, Write, Edit, Bash, Glob, Grep, WebFetch, WebSearch, Agent, AskUserQuestion, EnterPlanMode, ExitPlanMode, TaskCreate/Update/List/Get
+- **Streaming** — Real-time markdown rendering with syntax-highlighted code blocks, headers, lists, inline formatting
+- **Prompt Caching** — `cache_control` on system prompt, tools, and message history for ~90% input token savings
+- **Model-aware Context** — Dynamic context limits per model (opus 1M, sonnet/haiku 200k), auto-compact at 85%
+- **Permissions** — Three modes (default/auto/plan), Y/n/a prompts, regex allow + deny rules, auto classifier, Shift+Tab to cycle
+- **Context** — Auto-loads CLAUDE.md files (upward traversal) + git branch/status/commits into system prompt
+- **Sessions** — Auto-save conversations, resume with `--resume <id>`, fork with `--fork-session <id>`
 - **Git Workflow** — `/commit`, `/pr`, `/review` commands with AI-generated messages
+- **MCP Support** — JSON-RPC 2.0 over stdio, server lifecycle management, tool discovery with `mcp__` prefix
+- **Custom Agents** — Define agents in `.c2a/agents/*.md` with front-matter (tools, model, max_iterations)
+- **Background Agents** — `run_in_background` for async sub-agent execution with completion notifications
+- **Worktree Isolation** — Run sub-agents in isolated git worktrees
 - **Extended Thinking** — Show Claude's reasoning process with `--thinking`
 - **Image Input** — Paste image file paths to send screenshots to Claude
-- **Hooks** — Pre/post tool execution hooks via settings.json
-- **Status Bar** — Persistent bottom bar showing model, token count, session ID
+- **Hooks** — Pre/post tool execution hooks via settings.json with env vars and tool filtering
+- **Status Bar** — Configurable bottom bar (model/tokens/cost/mode/verbose/session)
+- **Syntax Highlighting** — Language-aware coloring for TS/JS/Python/Rust/Go/Bash/JSON/CSS/HTML
+- **Undo/Redo** — Ctrl+Z / Ctrl+Shift+Z in input with snapshot-based undo stack
+- **Checkpoint Rollback** — Esc-Esc to restore files modified by Write/Edit
+- **Task Management** — TaskCreate/Update/List/Get for tracking multi-step workflows
+- **Smart Truncation** — Grep pagination (head_limit/offset), Bash output capped at 500 lines, Glob pagination
+- **Cost Tracking** — `/cost` command + status bar with per-model USD pricing
+- **OpenAI Compatibility** — `--api-format openai` for any OpenAI-compatible endpoint
 
 ## Configuration
 
@@ -38,14 +56,18 @@ node dist/index.js
 ```
 --api-url <url>          API base URL (default: https://api.anthropic.com)
 --api-key <key>          API key
+--api-format <fmt>       anthropic | openai (default: anthropic)
 --model <model>          Model name (default: claude-sonnet-4-20250514)
 --resume <id>            Resume a previous session
+--fork-session <id>      Fork from an existing session
 --thinking <tokens>      Enable extended thinking with token budget
 --permission-mode <mode> default | auto | plan
 --allow <pattern>        Auto-allow Bash commands matching glob pattern (repeatable)
+--deny <pattern>         Always deny Bash commands matching pattern (repeatable)
 --allow-outside-cwd      Allow file tools to access paths outside working directory
 --dangerously-skip-permissions  Allow all tools without prompting
 --no-color               Disable colored output
+--version                Show version
 ```
 
 ### Environment Variables
@@ -77,78 +99,138 @@ Example `~/.c2a/settings.json`:
   "model": "claude-sonnet-4-20250514",
   "permissionMode": "default",
   "allowRules": ["npm *", "git *", "pnpm *"],
+  "denyRules": ["rm -rf *"],
   "thinkingBudget": 0,
   "allowOutsideCwd": false,
   "hooks": {
     "pre": [
       { "command": "echo $C2A_TOOL_NAME", "tools": ["Bash"], "timeout": 5000 }
     ]
+  },
+  "mcpServers": {
+    "my-server": {
+      "command": "node",
+      "args": ["./mcp-server.js"]
+    }
   }
 }
 ```
 
-Example `~/.c2a/settings.local.json` (gitignored):
-
-```json
-{
-  "apiKey": "sk-ant-xxxxx"
-}
-```
-
-Arrays (`allowRules`, `hooks.pre`, `hooks.post`) concatenate across layers. Scalars override.
+Arrays (`allowRules`, `denyRules`, `hooks.pre`, `hooks.post`) concatenate across layers. Scalars override.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
+| `/btw` | Quick side question without derailing main conversation |
 | `/clear` | Reset conversation |
 | `/commit` | Generate commit message and commit staged changes |
 | `/compact` | Compress conversation context to reduce token usage |
-| `/cost` | Show session token usage |
+| `/context` | Show context window analysis (tokens by category, capacity bar) |
+| `/cost` | Show session token usage and USD cost |
+| `/doctor` | System health check (git, node, API, settings, working dir) |
 | `/exit` | Save session and quit |
-| `/help` | Show command list |
+| `/help` | Show command list and keyboard shortcuts |
 | `/init` | Scan project and generate CLAUDE.md |
 | `/model [name]` | Show or switch model |
 | `/pr` | Generate PR title/body and create via `gh` |
 | `/review` | Code review current git diff |
 | `/sessions` | List saved sessions |
 | `/settings` | Show settings file hierarchy and merged config |
+| `/theme` | Cycle through three output themes |
+| `/quit` | Quit (alias for /exit) |
 
 ## Input
 
 | Key | Action |
 |-----|--------|
 | `Enter` | Submit input |
-| `\` at end of line | Continue on next line |
-| `Up` / `Down` | Command history |
-| `Tab` | Complete `/` commands |
+| `Ctrl+J` / `Shift+Enter` | Insert newline (multi-line input) |
+| `Up` / `Down` | Command history (single-line) / cursor navigation (multi-line) |
+| `Tab` | Complete `/` commands or `@file` references |
+| `Ctrl+R` | Reverse history search |
+| `Ctrl+A` / `Ctrl+E` | Move to start / end of line |
+| `Ctrl+W` | Delete word backward |
+| `Ctrl+K` | Kill to end of line |
+| `Ctrl+U` | Kill to start of line |
+| `Ctrl+Y` | Yank (paste from kill ring) |
+| `Ctrl+Z` | Undo last input change |
+| `Ctrl+Shift+Z` | Redo |
+| `Ctrl+L` | Clear screen |
+| `Ctrl+O` | Toggle verbose mode |
+| `Shift+Tab` | Cycle permission mode (default → auto → plan) |
+| `Ctrl+Left/Right` | Move by word |
+| `Home` / `End` | Move to start / end of line |
+| `Escape` | Cancel generation or close menu |
+| `Escape Escape` | Rollback last checkpoint (undo Write/Edit changes) |
 | `Ctrl+C` | Cancel input or interrupt running request |
 | `Ctrl+D` | Exit (on empty line) |
-| Paste | Multi-line paste auto-detected and submitted |
+| Paste | Multi-line paste auto-detected |
 
 ## Tools
 
 | Tool | Category | Description |
 |------|----------|-------------|
 | Read | safe | Read files with line numbers, offset/limit support |
-| Glob | safe | Fast file pattern matching (ignores node_modules/.git) |
-| Grep | safe | Regex search across files or directories (max 300 matches) |
-| WebFetch | safe | Fetch URLs, HTML auto-converted to text |
+| Glob | safe | Fast file pattern matching with head_limit/offset pagination |
+| Grep | safe | Regex search with output_mode, head_limit, context lines, type/glob filter, multiline, case-insensitive |
+| WebFetch | safe | Fetch URLs, HTML auto-stripped to text (50k char default) |
+| WebSearch | safe | DuckDuckGo web search with configurable result limit |
+| AskUserQuestion | safe | Prompt user for input during agent execution |
+| EnterPlanMode | safe | Switch to read-only mode for exploration |
+| ExitPlanMode | safe | Restore previous permission mode |
+| TaskCreate | safe | Create a task for progress tracking |
+| TaskUpdate | safe | Update task status or add progress note |
+| TaskList | safe | List all tasks with statuses |
+| TaskGet | safe | Get task details including progress messages |
 | Write | write | Create/overwrite files (auto-creates parent dirs) |
 | Edit | write | Exact string replacement with uniqueness check |
-| Bash | dangerous | Execute shell commands (120s timeout, 10MB buffer) |
+| Bash | dangerous | Execute shell commands (120s timeout, 10MB buffer, 500-line truncation) |
+| Agent | dangerous | Spawn sub-agents with optional worktree isolation and background execution |
 
 **Permission modes:**
 - `default` — Safe tools auto-allowed, dangerous/write tools prompt Y/n/a
-- `auto` — All tools auto-allowed (no prompts)
+- `auto` — All tools auto-allowed (no prompts), with deny rule enforcement
 - `plan` — Safe tools allowed, dangerous/write silently denied
 
-**Allow rules** match Bash commands with glob patterns:
+**Allow/Deny rules** match Bash commands with glob patterns:
 ```bash
-c2a --allow "npm *" --allow "git status"
+c2a --allow "npm *" --allow "git status" --deny "rm -rf *"
 ```
 
-**Workspace restriction** — Read/Write/Edit are restricted to the current working directory subtree. Use `--allow-outside-cwd` to override.
+## Custom Agents
+
+Define reusable agent configurations in `.c2a/agents/`:
+
+```markdown
+<!-- .c2a/agents/reviewer.md -->
+---
+tools: Read, Grep, Glob
+model: claude-sonnet-4-20250514
+max_iterations: 10
+---
+
+You are a code reviewer. Analyze the codebase for bugs, security issues, and style problems.
+```
+
+Use via the Agent tool with `subagent_type: "reviewer"`.
+
+## MCP Servers
+
+Configure Model Context Protocol servers in settings.json:
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-filesystem"]
+    }
+  }
+}
+```
+
+MCP tools appear with `mcp__<server>__<tool>` prefix and are automatically discovered at startup.
 
 ## Hooks
 
@@ -179,10 +261,10 @@ Configure in settings.json to run shell commands before/after tool execution:
 export ANTHROPIC_API_KEY=sk-ant-xxx
 c2a
 
-# Custom proxy / OpenAI-compatible endpoint
-c2a --api-url https://my-proxy.com --api-key sk-xxx
+# OpenAI-compatible endpoint
+c2a --api-url https://my-proxy.com --api-key sk-xxx --api-format openai
 
-# claude2api gateway
+# Custom gateway
 c2a --api-url http://localhost:3000 --api-key sk-c2a-xxx
 ```
 
@@ -196,38 +278,45 @@ c2a    # then type /sessions
 
 # Resume a session
 c2a --resume a1b2c3d4
+
+# Fork from existing session
+c2a --fork-session a1b2c3d4
 ```
 
 ## Project Structure
 
 ```
 src/
-├── index.ts        Entry point, REPL, command routing
-├── agent.ts        Core agent loop (stream → parse → execute → loop)
-├── client.ts       SSE streaming client with retry + timeout
-├── tools.ts        7 tool definitions + local execution
-├── permissions.ts  Permission system (modes, allow rules, prompts)
-├── context.ts      System prompt (environment, git, CLAUDE.md)
-├── markdown.ts     Streaming markdown → ANSI renderer
-├── input.ts        Raw-mode terminal input (history, paste, tab)
-├── render.ts       ANSI color helpers, spinner, diff display
-├── hooks.ts        Pre/post tool execution hooks
-├── image.ts        Image file detection + base64 encoding
-├── session.ts      Session persistence (~/.c2a/sessions/)
-├── settings.ts     4-level settings hierarchy
-├── statusbar.ts    Bottom status bar (ANSI scroll region)
-├── compact.ts      Conversation summarization
-├── init.ts         CLAUDE.md generation from project scan
-├── git-commands.ts /commit, /pr, /review implementations
-└── types.ts        Shared TypeScript types
+├── index.ts           Entry point, REPL, command routing (17 slash commands)
+├── agent.ts           Core agent loop with prompt caching + model-aware context
+├── client.ts          SSE streaming client (Anthropic + OpenAI format)
+├── tools.ts           16 tool definitions + local execution + truncation
+├── permissions.ts     Permission system (3 modes, allow/deny rules, auto classifier)
+├── context.ts         System prompt (environment, git, CLAUDE.md upward traversal)
+├── markdown.ts        Streaming markdown → ANSI renderer
+├── input.ts           Raw-mode terminal input (history, paste, tab, undo/redo)
+├── render.ts          ANSI colors, spinner, diff display, tool-specific rendering
+├── highlight.ts       Syntax highlighting (10 languages)
+├── hooks.ts           Pre/post tool execution hooks
+├── image.ts           Image file detection + base64 encoding
+├── session.ts         Session persistence + fork (~/.c2a/sessions/)
+├── settings.ts        4-level settings hierarchy + merge
+├── statusbar.ts       Configurable bottom status bar
+├── compact.ts         Conversation summarization via API
+├── init.ts            CLAUDE.md generation from project scan
+├── git-commands.ts    /commit, /pr, /review implementations
+├── subagent.ts        Sub-agent execution with iteration limit
+├── custom-agents.ts   .c2a/agents/*.md loader with front-matter parsing
+├── worktree.ts        Git worktree create/cleanup for isolated agents
+├── mcp.ts             MCP client (JSON-RPC 2.0 over stdio)
+├── tasks.ts           Task store for progress tracking
+├── file-completions.ts  @file Tab completion (fast-glob scan)
+├── checkpoint.ts      File snapshot + rollback for Write/Edit
+├── pricing.ts         Per-model USD cost estimation
+├── doctor.ts          /doctor system health checks
+└── types.ts           Shared TypeScript types
 ```
 
-## Architecture Docs
+## License
 
-Detailed implementation documentation in [`docs/`](docs/):
-
-- [architecture.md](docs/architecture.md) — Module graph, request lifecycle, data structures
-- [core-loop.md](docs/core-loop.md) — Agent loop, SSE protocol, tool pipeline
-- [terminal-io.md](docs/terminal-io.md) — Raw mode input, markdown rendering, status bar
-- [permissions-tools.md](docs/permissions-tools.md) — Permission model, tool implementations, hooks
-- [context-session.md](docs/context-session.md) — CLAUDE.md loading, git context, sessions, settings
+MIT
