@@ -26,6 +26,7 @@ export interface ContentBlock {
     media_type: "image/jpeg" | "image/png" | "image/gif" | "image/webp";
     data: string;
   };
+  cache_control?: { type: "ephemeral" };
 }
 
 export interface Message {
@@ -36,4 +37,15 @@ export interface Message {
 export interface UsageStats {
   inputTokens: number;
   outputTokens: number;
+}
+
+export interface ToolPermissionControl {
+  getMode(): PermissionMode;
+  setMode(mode: PermissionMode): void;
+}
+
+export interface ToolContext {
+  config: Config;
+  permissionControl?: ToolPermissionControl;
+  askUser?: (question: string) => Promise<string>;
 }

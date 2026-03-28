@@ -1,16 +1,26 @@
 import { streamRequest } from "./client.js";
 import { compactConversation } from "./compact.js";
 import { executeTool, TOOL_DEFINITIONS } from "./tools.js";
+import { getMcpToolDefinitions } from "./mcp.js";
 import { renderToolCall, renderToolResult, renderPermissionDenied, renderDiff, startSpinner, dim } from "./render.js";
 import type { PermissionManager } from "./permissions.js";
 import { buildSystemPrompt } from "./context.js";
 import { MarkdownRenderer } from "./markdown.js";
 import { runHooks, type HooksConfig } from "./hooks.js";
 import type { Config, ContentBlock, Message, UsageStats } from "./types.js";
+import type { CheckpointManager } from "./checkpoint.js";
 
-// Rough token estimate: ~4 chars per token
-const CONTEXT_LIMIT_TOKENS = 180_000;
-const AUTO_COMPACT_THRESHOLD = 0.85; // compact at 85% capacity
+export function getContextLimit(model: string): number {
+  const m = model.toLowerCase();
+  if (m.includes("opus") && (m.includes("1m") || m.includes("1000k"))) return 1_000_000;
+  if (m.includes("opus")) return 200_000;
+  if (m.includes("haiku")) return 200_000;
+  if (m.includes("sonnet")) return 200_000;
+  return 200_000;
+}
+
+export const CONTEXT_LIMIT_TOKENS = 200_000;
+const AUTO_COMPACT_THRESHOLD = 0.85;
 
 function estimateTokens(messages: Message[]): number {
   let chars = 0;
@@ -40,16 +50,26 @@ export async function runAgentLoop(
   messages: Message[],
   permissionManager: PermissionManager,
   signal?: AbortSignal,
-  hooks?: HooksConfig
+  hooks?: HooksConfig,
+  checkpointManager?: CheckpointManager,
 ): Promise<UsageStats> {
   let iteration = 0;
   const MAX_ITERATIONS = 25;
   const usage: UsageStats = { inputTokens: 0, outputTokens: 0 };
 
+  const systemText = await buildSystemPrompt();
+  const system = [{ type: "text", text: systemText, cache_control: { type: "ephemeral" as const } }];
+
+  const allTools = [...TOOL_DEFINITIONS, ...getMcpToolDefinitions()];
+  const tools = allTools.map((t, i, arr) =>
+    i === arr.length - 1 ? { ...t, cache_control: { type: "ephemeral" as const } } : t
+  );
+
+  const contextLimit = getContextLimit(config.model);
+
   while (iteration++ < MAX_ITERATIONS) {
-    // Auto-compact when approaching context limit
     const estimated = estimateTokens(messages);
-    if (estimated > CONTEXT_LIMIT_TOKENS * AUTO_COMPACT_THRESHOLD && messages.length > 4) {
+    if (estimated > contextLimit * AUTO_COMPACT_THRESHOLD && messages.length > 4) {
       process.stderr.write(dim("  [auto-compacting — context at ~" + Math.round(estimated / 1000) + "k tokens]\n"));
       try {
         const summary = await compactConversation(config, messages);
@@ -65,8 +85,8 @@ export async function runAgentLoop(
       model: config.model,
       messages,
       max_tokens: config.thinkingBudget > 0 ? config.thinkingBudget + 16384 : 16384,
-      tools: TOOL_DEFINITIONS,
-      system: await buildSystemPrompt(),
+      tools,
+      system,
     };
 
     if (config.thinkingBudget > 0) {
@@ -81,6 +101,7 @@ export async function runAgentLoop(
     let current: StreamedBlock | null = null;
     let stopReason = "";
     let hasTextOutput = false;
+    let thinkingLineStart = true;
     const md = new MarkdownRenderer();
 
     for await (const event of streamRequest(config, body, signal)) {
@@ -103,6 +124,10 @@ export async function runAgentLoop(
           name: block.name as string | undefined,
           thinking: "",
         };
+        if (block.type === "thinking") {
+          thinkingLineStart = true;
+          process.stderr.write(dim("\n  ─── thinking ───\n"));
+        }
       }
 
       if (type === "content_block_delta" && current) {
@@ -121,15 +146,20 @@ export async function runAgentLoop(
 
         if (delta.type === "thinking_delta") {
           const t = delta.thinking as string;
-          process.stderr.write(dim(t));
+          let out = "";
+          for (const c of t) {
+            if (thinkingLineStart) { out += "  "; thinkingLineStart = false; }
+            out += c;
+            if (c === "\n") thinkingLineStart = true;
+          }
+          process.stderr.write(dim(out));
           current.thinking += t;
         }
       }
 
       if (type === "content_block_stop" && current) {
         if (current.type === "thinking" && current.thinking) {
-          // Visual separator between thinking and response
-          process.stderr.write("\n");
+          process.stderr.write(dim("\n  ───\n"));
         }
         if (current.type === "text") {
           contentBlocks.push({ type: "text", text: current.text });
@@ -223,6 +253,13 @@ export async function runAgentLoop(
         continue;
       }
 
+      if (checkpointManager && (toolName === "Write" || toolName === "Edit")) {
+        const filePath = toolInput.file_path as string;
+        if (filePath) {
+          await checkpointManager.snapshotFile(filePath);
+        }
+      }
+
       const stopSpin = startSpinner(`Running ${toolName}...`);
 
       try {
@@ -249,7 +286,10 @@ export async function runAgentLoop(
       }
     }
 
-    // Append tool results as user message and loop
+    if (toolResults.length > 0) {
+      const last = toolResults[toolResults.length - 1];
+      toolResults[toolResults.length - 1] = { ...last, cache_control: { type: "ephemeral" } };
+    }
     messages.push({ role: "user", content: toolResults });
   }
 

@@ -3,6 +3,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import type { PermissionMode, ApiFormat } from "./types.js";
 import type { HooksConfig } from "./hooks.js";
+import type { StatusBarField } from "./statusbar.js";
 
 // ~/.c2a/
 const GLOBAL_DIR = path.join(os.homedir(), ".c2a");
@@ -14,6 +15,12 @@ const PROJECT_DIR = ".c2a";
 const PROJECT_SETTINGS = path.join(PROJECT_DIR, "settings.json");
 const PROJECT_LOCAL = path.join(PROJECT_DIR, "settings.local.json");
 
+export interface McpServerConfig {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+}
+
 export interface Settings {
   apiUrl?: string;
   apiKey?: string;
@@ -22,8 +29,18 @@ export interface Settings {
   permissionMode?: PermissionMode;
   thinkingBudget?: number;
   allowRules?: string[];
+  denyRules?: string[];
   allowOutsideCwd?: boolean;
   hooks?: HooksConfig;
+  mcpServers?: Record<string, McpServerConfig>;
+  statusBar?: {
+    fields?: StatusBarField[];
+  };
+  autoClassifier?: {
+    enabled?: boolean;
+    safePatterns?: string[];
+    dangerousPatterns?: string[];
+  };
 }
 
 async function readJson(filePath: string): Promise<Settings> {
@@ -48,6 +65,19 @@ function mergeSettings(base: Settings, override: Settings): Settings {
 
     if (key === "allowRules" && Array.isArray(value)) {
       result.allowRules = [...(result.allowRules ?? []), ...value];
+    } else if (key === "denyRules" && Array.isArray(value)) {
+      result.denyRules = [...(result.denyRules ?? []), ...value];
+    } else if (key === "mcpServers" && typeof value === "object" && !Array.isArray(value)) {
+      result.mcpServers = { ...(result.mcpServers ?? {}), ...(value as Record<string, McpServerConfig>) };
+    } else if (key === "autoClassifier" && typeof value === "object" && !Array.isArray(value)) {
+      const baseAc = result.autoClassifier ?? {};
+      const overAc = value as NonNullable<Settings["autoClassifier"]>;
+      result.autoClassifier = {
+        ...baseAc,
+        ...overAc,
+        safePatterns: [...(baseAc.safePatterns ?? []), ...(overAc.safePatterns ?? [])],
+        dangerousPatterns: [...(baseAc.dangerousPatterns ?? []), ...(overAc.dangerousPatterns ?? [])],
+      };
     } else if (key === "hooks" && typeof value === "object") {
       const baseHooks = result.hooks ?? {};
       const overHooks = value as HooksConfig;
@@ -55,6 +85,8 @@ function mergeSettings(base: Settings, override: Settings): Settings {
         pre: [...(baseHooks.pre ?? []), ...(overHooks.pre ?? [])],
         post: [...(baseHooks.post ?? []), ...(overHooks.post ?? [])],
       };
+    } else if (key === "statusBar") {
+      result.statusBar = { ...(result.statusBar ?? {}), ...(override.statusBar ?? {}) };
     } else {
       (result as Record<string, unknown>)[key] = value;
     }

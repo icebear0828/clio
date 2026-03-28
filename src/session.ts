@@ -79,6 +79,17 @@ export class SessionManager {
     }
   }
 
+  static async fork(sourceId: string, model: string): Promise<{
+    manager: SessionManager;
+    messages: Message[];
+    usage: UsageStats;
+  } | null> {
+    const data = await SessionManager.restore(sourceId);
+    if (!data) return null;
+    const manager = new SessionManager(model);
+    return { manager, messages: data.messages, usage: data.usage };
+  }
+
   /** List recent sessions (newest first). */
   static async list(limit = 10): Promise<Array<{ id: string; cwd: string; model: string; updatedAt: string; messageCount: number }>> {
     await ensureDir();

@@ -5,10 +5,6 @@ const MAX_RETRIES = 3;
 const RETRY_DELAYS = [1000, 3000, 8000];
 
 const ANTHROPIC_VERSION = "2023-06-01";
-const BETA_FEATURES = [
-  "interleaved-thinking-2025-05-14",
-  "prompt-caching-2024-07-31",
-];
 
 function isRetryable(status: number): boolean {
   return status === 429 || status === 502 || status === 503 || status === 504;
@@ -36,25 +32,31 @@ function getHeaders(config: Config): Record<string, string> {
     };
   }
 
-  const headers: Record<string, string> = {
+  const betaFeatures: string[] = ["prompt-caching-2024-07-31"];
+  if (config.thinkingBudget > 0) {
+    betaFeatures.push("interleaved-thinking-2025-05-14");
+  }
+  return {
     "Content-Type": "application/json",
     "x-api-key": config.apiKey,
     "anthropic-version": ANTHROPIC_VERSION,
+    "anthropic-beta": betaFeatures.join(","),
   };
-  if (config.thinkingBudget > 0) {
-    headers["anthropic-beta"] = BETA_FEATURES.join(",");
-  }
-  return headers;
 }
 
 /** Convert Anthropic request body to OpenAI format */
 function toOpenAIBody(body: Record<string, unknown>): Record<string, unknown> {
   const messages: Array<Record<string, unknown>> = [];
 
-  // System prompt → system message
   const system = body.system;
   if (typeof system === "string" && system) {
     messages.push({ role: "system", content: system });
+  } else if (Array.isArray(system)) {
+    const text = (system as Array<Record<string, unknown>>)
+      .filter((b) => b.type === "text")
+      .map((b) => b.text as string)
+      .join("\n");
+    if (text) messages.push({ role: "system", content: text });
   }
 
   // Convert messages
@@ -113,6 +115,7 @@ function toOpenAIBody(body: Record<string, unknown>): Record<string, unknown> {
     model: body.model,
     messages,
     stream: true,
+    stream_options: { include_usage: true },
     max_tokens: body.max_tokens,
     ...(openaiTools?.length ? { tools: openaiTools } : {}),
   };
