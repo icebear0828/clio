@@ -1,3 +1,5 @@
+[中文](README_zh.md) | English
+
 # Clio — Claude Code CLI
 
 A feature-rich Claude Code clone that runs in your terminal. Connects to the Anthropic API (or any compatible endpoint) and provides an interactive agentic coding assistant with local tool execution.
