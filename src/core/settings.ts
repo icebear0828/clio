@@ -57,7 +57,7 @@ async function readJson(filePath: string): Promise<Settings> {
  * Arrays (allowRules) are concatenated, objects (hooks) are merged,
  * scalars are overwritten by the later source.
  */
-function mergeSettings(base: Settings, override: Settings): Settings {
+export function mergeSettings(base: Settings, override: Settings): Settings {
   const result = { ...base };
 
   for (const [key, value] of Object.entries(override)) {

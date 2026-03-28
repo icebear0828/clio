@@ -20,7 +20,7 @@ export function listCustomAgents(): string[] {
   return [...registry.keys()];
 }
 
-function parseFrontMatter(content: string): { meta: Record<string, string>; body: string } {
+export function parseFrontMatter(content: string): { meta: Record<string, string>; body: string } {
   const meta: Record<string, string> = {};
   if (!content.startsWith("---")) return { meta, body: content };
 
@@ -40,7 +40,7 @@ function parseFrontMatter(content: string): { meta: Record<string, string>; body
   return { meta, body };
 }
 
-function parseAgentFile(name: string, content: string): CustomAgentDef {
+export function parseAgentFile(name: string, content: string): CustomAgentDef {
   const { meta, body } = parseFrontMatter(content);
 
   const def: CustomAgentDef = { name, systemPrompt: body };
