@@ -239,8 +239,16 @@ async function runPrintMode(
   const messages: Message[] = [{ role: "user", content: prompt }];
   const sectionCache = new SectionCache();
 
-  // In print mode, tool output goes to stderr; only final text to stdout
+  // In JSON mode, suppress streaming stdout from MarkdownRenderer
+  const origStdoutWrite = process.stdout.write.bind(process.stdout);
+  if (printMode.outputFormat === "json") {
+    process.stdout.write = (() => true) as typeof process.stdout.write;
+  }
+
   const usage = await runAgentLoop(config, messages, permissionManager, undefined, settings.hooks, undefined, sectionCache);
+
+  // Restore stdout
+  process.stdout.write = origStdoutWrite;
 
   // Extract final assistant text
   const lastMsg = messages[messages.length - 1];
