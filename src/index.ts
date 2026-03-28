@@ -31,7 +31,6 @@ import { CheckpointManager } from "./tools/checkpoint.js";
 import { SectionCache } from "./core/section-cache.js";
 import { initPlugins } from "./plugins/index.js";
 import { stdin } from "node:process";
-import * as readline from "node:readline/promises";
 import type { ApiFormat, Config, Message, PermissionMode, UsageStats } from "./types.js";
 
 type OutputFormat = "text" | "json";
@@ -52,14 +51,14 @@ const PROVIDER_PRESETS: ProviderPreset[] = [
 function arrowSelect(items: string[], title: string): Promise<number> {
   return new Promise((resolve) => {
     let selected = 0;
+    let escBuf = ""; // buffer for multi-byte escape sequences
+    let escTimer: ReturnType<typeof setTimeout> | null = null;
 
-    // Save cursor position right before the menu, use it as anchor
-    // We'll use \x1b[s / \x1b[u (save/restore cursor) for reliable positioning
     process.stderr.write(`  ${title}\n\n`);
-    process.stderr.write("\x1b[s"); // save cursor — this is our anchor point
+    process.stderr.write("\x1b[s"); // save cursor anchor
 
     const render = () => {
-      process.stderr.write("\x1b[u"); // restore to anchor
+      process.stderr.write("\x1b[u");
       for (let i = 0; i < items.length; i++) {
         const prefix = i === selected ? boldCyan("❯ ") : "  ";
         const label = i === selected ? bold(items[i]) : dim(items[i]);
@@ -69,73 +68,174 @@ function arrowSelect(items: string[], title: string): Promise<number> {
       process.stderr.write(`\x1b[2K  ${dim("↑/↓ to move, Enter to select")}`);
     };
 
+    const cleanup = () => {
+      stdin.removeListener("data", onData);
+      stdin.setRawMode(false);
+      stdin.pause();
+      if (escTimer) { clearTimeout(escTimer); escTimer = null; }
+    };
+
+    const confirm = () => {
+      cleanup();
+      process.stderr.write("\x1b[u");
+      for (let i = 0; i < items.length + 2; i++) {
+        process.stderr.write(`\x1b[2K\n`);
+      }
+      process.stderr.write("\x1b[u");
+      process.stderr.write(`${dim("Provider:")} ${bold(items[selected])}\n\n`);
+      resolve(selected);
+    };
+
+    const processSeq = (seq: string) => {
+      if (seq === "\x1b[A") {
+        selected = (selected - 1 + items.length) % items.length;
+        render();
+      } else if (seq === "\x1b[B") {
+        selected = (selected + 1) % items.length;
+        render();
+      }
+      // other sequences silently ignored
+    };
+
+    const onData = (buf: Buffer) => {
+      const s = buf.toString();
+
+      // If we're accumulating an escape sequence
+      if (escBuf) {
+        escBuf += s;
+        if (escTimer) { clearTimeout(escTimer); escTimer = null; }
+        // CSI sequences end with a letter
+        if (/\x1b\[.+[A-Za-z~]/.test(escBuf)) {
+          processSeq(escBuf);
+          escBuf = "";
+        } else {
+          // Wait for more bytes
+          escTimer = setTimeout(() => { escBuf = ""; }, 50);
+        }
+        return;
+      }
+
+      // Full escape sequence in one chunk (common case)
+      if (s.startsWith("\x1b[") && s.length >= 3) {
+        processSeq(s);
+        return;
+      }
+
+      // Bare ESC — start accumulating or exit on timeout
+      if (s === "\x1b") {
+        escBuf = s;
+        escTimer = setTimeout(() => {
+          // Standalone Esc pressed — exit
+          cleanup();
+          process.exit(0);
+        }, 100);
+        return;
+      }
+
+      if (s === "\r" || s === "\n") { confirm(); return; }
+      if (s === "\x03") { cleanup(); process.exit(0); }
+      if (s === "k" || s === "K") {
+        selected = (selected - 1 + items.length) % items.length;
+        render();
+      } else if (s === "j" || s === "J") {
+        selected = (selected + 1) % items.length;
+        render();
+      }
+    };
+
     render();
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.on("data", onData);
+  });
+}
+
+function readSecret(prompt: string): Promise<string> {
+  return new Promise((resolve) => {
+    process.stderr.write(prompt);
+    let secret = "";
 
     stdin.setRawMode(true);
     stdin.resume();
 
     const onData = (buf: Buffer) => {
-      const s = buf.toString();
-      if (s === "\x1b[A" || s === "k") {
-        selected = (selected - 1 + items.length) % items.length;
-        render();
-      } else if (s === "\x1b[B" || s === "j") {
-        selected = (selected + 1) % items.length;
-        render();
-      } else if (s === "\r" || s === "\n") {
-        stdin.removeListener("data", onData);
-        stdin.setRawMode(false);
-        // Clear menu: restore anchor, overwrite with selection
-        process.stderr.write("\x1b[u");
-        for (let i = 0; i < items.length + 2; i++) {
-          process.stderr.write(`\x1b[2K\n`);
+      // Process byte-by-byte, ignore escape sequences
+      for (let i = 0; i < buf.length; i++) {
+        const b = buf[i];
+        if (b === 0x0d || b === 0x0a) {
+          // Enter
+          stdin.removeListener("data", onData);
+          stdin.setRawMode(false);
+          stdin.pause();
+          process.stderr.write("\n");
+          resolve(secret.trim());
+          return;
+        } else if (b === 0x03) {
+          // Ctrl+C
+          stdin.removeListener("data", onData);
+          stdin.setRawMode(false);
+          stdin.pause();
+          process.exit(0);
+        } else if (b === 0x1b) {
+          // Skip escape sequences entirely
+          if (i + 1 < buf.length && buf[i + 1] === 0x5b) {
+            // CSI: skip until letter
+            i += 2;
+            while (i < buf.length && !(buf[i] >= 0x40 && buf[i] <= 0x7e)) i++;
+          }
+        } else if (b === 0x7f || b === 0x08) {
+          // Backspace
+          if (secret.length > 0) {
+            secret = secret.slice(0, -1);
+            process.stderr.write("\b \b");
+          }
+        } else if (b >= 0x20 && b < 0x7f) {
+          // Printable ASCII
+          secret += String.fromCharCode(b);
+          process.stderr.write("*");
         }
-        process.stderr.write("\x1b[u");
-        process.stderr.write(`${dim("Provider:")} ${bold(items[selected])}\n\n`);
-        resolve(selected);
-      } else if (s === "\x03") {
-        stdin.removeListener("data", onData);
-        stdin.setRawMode(false);
-        process.exit(0);
       }
     };
     stdin.on("data", onData);
   });
 }
 
-function readSecret(rl: readline.Interface, prompt: string): Promise<string> {
+function readLine(prompt: string): Promise<string> {
   return new Promise((resolve) => {
     process.stderr.write(prompt);
-    let secret = "";
+    let line = "";
 
-    // Pause readline so it doesn't consume stdin
-    rl.pause();
     stdin.setRawMode(true);
     stdin.resume();
 
     const onData = (buf: Buffer) => {
-      const s = buf.toString();
-      for (const ch of s) {
-        if (ch === "\r" || ch === "\n") {
+      for (let i = 0; i < buf.length; i++) {
+        const b = buf[i];
+        if (b === 0x0d || b === 0x0a) {
           stdin.removeListener("data", onData);
           stdin.setRawMode(false);
           stdin.pause();
-          rl.resume();
           process.stderr.write("\n");
-          resolve(secret.trim());
+          resolve(line.trim());
           return;
-        } else if (ch === "\x03") {
+        } else if (b === 0x03) {
           stdin.removeListener("data", onData);
           stdin.setRawMode(false);
+          stdin.pause();
           process.exit(0);
-        } else if (ch === "\x7f" || ch === "\b") {
-          if (secret.length > 0) {
-            secret = secret.slice(0, -1);
+        } else if (b === 0x1b) {
+          if (i + 1 < buf.length && buf[i + 1] === 0x5b) {
+            i += 2;
+            while (i < buf.length && !(buf[i] >= 0x40 && buf[i] <= 0x7e)) i++;
+          }
+        } else if (b === 0x7f || b === 0x08) {
+          if (line.length > 0) {
+            line = line.slice(0, -1);
             process.stderr.write("\b \b");
           }
-        } else if (ch.charCodeAt(0) >= 32) {
-          secret += ch;
-          process.stderr.write("*");
+        } else if (b >= 0x20 && b < 0x7f) {
+          line += String.fromCharCode(b);
+          process.stderr.write(String.fromCharCode(b));
         }
       }
     };
@@ -155,9 +255,6 @@ async function runSetupWizard(): Promise<{ apiUrl: string; apiKey: string; model
 
   const choice = await arrowSelect(options, "Choose a provider:");
 
-  // Create readline AFTER arrowSelect releases raw mode
-  const rl = readline.createInterface({ input: stdin, output: process.stderr });
-
   let apiUrl: string;
   let apiKey: string;
   let model: string;
@@ -169,16 +266,14 @@ async function runSetupWizard(): Promise<{ apiUrl: string; apiKey: string; model
     model = preset.model;
     apiFormat = preset.apiFormat;
     process.stderr.write(`  ${dim("Model:")}    ${model}\n\n`);
-    apiKey = await readSecret(rl, dim("  API Key: "));
+    apiKey = await readSecret(dim("  API Key: "));
   } else {
-    apiUrl = (await rl.question(dim("  API URL: "))).trim();
-    apiKey = await readSecret(rl, dim("  API Key: "));
-    model = (await rl.question(dim("  Model:   "))).trim();
-    const fmtAnswer = (await rl.question(dim("  Format (anthropic/openai) [openai]: "))).trim();
+    apiUrl = await readLine(dim("  API URL: "));
+    apiKey = await readSecret(dim("  API Key: "));
+    model = await readLine(dim("  Model:   "));
+    const fmtAnswer = await readLine(dim("  Format (anthropic/openai) [openai]: "));
     apiFormat = fmtAnswer === "anthropic" ? "anthropic" : "openai";
   }
-
-  rl.close();
 
   const missing: string[] = [];
   if (!apiKey) missing.push("API Key");
