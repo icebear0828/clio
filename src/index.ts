@@ -103,6 +103,46 @@ function arrowSelect(items: string[], title: string): Promise<number> {
   });
 }
 
+function readSecret(rl: readline.Interface, prompt: string): Promise<string> {
+  return new Promise((resolve) => {
+    process.stderr.write(prompt);
+    let secret = "";
+
+    // Pause readline so it doesn't consume stdin
+    rl.pause();
+    stdin.setRawMode(true);
+    stdin.resume();
+
+    const onData = (buf: Buffer) => {
+      const s = buf.toString();
+      for (const ch of s) {
+        if (ch === "\r" || ch === "\n") {
+          stdin.removeListener("data", onData);
+          stdin.setRawMode(false);
+          stdin.pause();
+          rl.resume();
+          process.stderr.write("\n");
+          resolve(secret.trim());
+          return;
+        } else if (ch === "\x03") {
+          stdin.removeListener("data", onData);
+          stdin.setRawMode(false);
+          process.exit(0);
+        } else if (ch === "\x7f" || ch === "\b") {
+          if (secret.length > 0) {
+            secret = secret.slice(0, -1);
+            process.stderr.write("\b \b");
+          }
+        } else if (ch.charCodeAt(0) >= 32) {
+          secret += ch;
+          process.stderr.write("*");
+        }
+      }
+    };
+    stdin.on("data", onData);
+  });
+}
+
 async function runSetupWizard(): Promise<{ apiUrl: string; apiKey: string; model: string; apiFormat: ApiFormat }> {
   process.stderr.write("\n");
   process.stderr.write(boldCyan("  ── Welcome to Clio ──\n\n"));
@@ -129,10 +169,10 @@ async function runSetupWizard(): Promise<{ apiUrl: string; apiKey: string; model
     model = preset.model;
     apiFormat = preset.apiFormat;
     process.stderr.write(`  ${dim("Model:")}    ${model}\n\n`);
-    apiKey = (await rl.question(dim("  API Key: "))).trim();
+    apiKey = await readSecret(rl, dim("  API Key: "));
   } else {
     apiUrl = (await rl.question(dim("  API URL: "))).trim();
-    apiKey = (await rl.question(dim("  API Key: "))).trim();
+    apiKey = await readSecret(rl, dim("  API Key: "));
     model = (await rl.question(dim("  Model:   "))).trim();
     const fmtAnswer = (await rl.question(dim("  Format (anthropic/openai) [openai]: "))).trim();
     apiFormat = fmtAnswer === "anthropic" ? "anthropic" : "openai";
@@ -140,8 +180,12 @@ async function runSetupWizard(): Promise<{ apiUrl: string; apiKey: string; model
 
   rl.close();
 
-  if (!apiKey) {
-    process.stderr.write(red("\n  Error: API key cannot be empty.\n"));
+  const missing: string[] = [];
+  if (!apiKey) missing.push("API Key");
+  if (!apiUrl) missing.push("API URL");
+  if (!model) missing.push("Model");
+  if (missing.length > 0) {
+    process.stderr.write(red(`\n  Error: ${missing.join(", ")} cannot be empty.\n`));
     process.exit(1);
   }
 
