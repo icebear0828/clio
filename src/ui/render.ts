@@ -74,119 +74,115 @@ export function startSpinner(message: string): () => void {
 
   let i = 0;
   const interval = setInterval(() => {
-    process.stderr.write(`\r  ${cyan(SPINNER_FRAMES[i++ % SPINNER_FRAMES.length])} ${dim(message)}`);
+    process.stderr.write(`\r\x1b[2K    ${dimCyan(SPINNER_FRAMES[i++ % SPINNER_FRAMES.length])} ${dim(message)}`);
   }, 80);
 
   return () => {
     clearInterval(interval);
-    process.stderr.write("\r\x1b[K");
+    process.stderr.write("\r\x1b[2K");
   };
 }
 
-export function renderToolCall(name: string, input: Record<string, unknown>): void {
-  let display: string;
+// ── Box drawing ──
 
+function boxHeader(label: string, detail?: string): string {
+  const detailStr = detail ? ` ${dim(detail)}` : "";
+  return `  ${dimCyan("╭─")} ${boldCyan(label)}${detailStr}`;
+}
+
+function boxLine(content: string): string {
+  return `  ${dimCyan("│")} ${content}`;
+}
+
+function boxFooter(): string {
+  return `  ${dimCyan("╰─")}`;
+}
+
+// ── Tool call display ──
+
+function formatToolDetail(name: string, input: Record<string, unknown>): { label: string; detail: string; body?: string } {
   switch (name) {
     case "Read": {
       const fp = (input.file_path as string) ?? "";
       const range = input.offset
         ? ` ${dim(`(${input.offset}${input.limit ? `-${(input.offset as number) + (input.limit as number)}` : ""}`)}`
         : "";
-      display = `${dim("Read")} ${cyan(fp)}${range}`;
-      break;
+      return { label: "Read", detail: `${fp}${range}` };
     }
     case "Bash": {
       const cmd = (input.command as string) ?? "";
       const truncated = cmd.length > 120 ? cmd.slice(0, 117) + "..." : cmd;
-      display = `${dim("$")} ${truncated}`;
-      break;
+      return { label: "Bash", detail: "", body: `${dim("$")} ${truncated}` };
     }
     case "Edit": {
       const fp = (input.file_path as string) ?? "";
-      display = `${dim("Edit")} ${cyan(fp)}`;
-      break;
+      return { label: "Edit", detail: fp };
     }
     case "Write": {
       const fp = (input.file_path as string) ?? "";
-      display = `${dim("Write")} ${cyan(fp)}`;
-      break;
+      return { label: "Write", detail: fp };
     }
     case "Glob": {
       const pattern = (input.pattern as string) ?? "";
-      display = `${dim("Glob")} ${cyan(pattern)}`;
-      break;
+      return { label: "Glob", detail: pattern };
     }
     case "Grep": {
       const pattern = (input.pattern as string) ?? "";
       const sp = input.path as string | undefined;
-      display = `${dim("Grep")} ${cyan(pattern)}${sp ? dim(` in ${sp}`) : ""}`;
-      break;
+      return { label: "Grep", detail: `${pattern}${sp ? dim(` in ${sp}`) : ""}` };
     }
     case "WebFetch": {
       const url = (input.url as string) ?? "";
       const prompt = (input.prompt as string) ?? "";
       const shortPrompt = prompt.length > 60 ? prompt.slice(0, 57) + "..." : prompt;
-      display = `${dim("Fetch")} ${cyan(url)}${shortPrompt ? dim(" → ") + shortPrompt : ""}`;
-      break;
+      return { label: "Fetch", detail: `${url}${shortPrompt ? dim(" → ") + shortPrompt : ""}` };
     }
     case "Agent": {
       const desc = (input.description ?? input.prompt ?? "") as string;
       const agentType = input.subagent_type as string | undefined;
-      const label = desc.length > 80 ? desc.slice(0, 77) + "..." : desc;
-      const prefix = agentType ? `Agent:${agentType}` : "Agent";
-      display = `${dim(prefix)} ${cyan(label)}`;
-      break;
+      const label = agentType ? `Agent:${agentType}` : "Agent";
+      const truncated = desc.length > 80 ? desc.slice(0, 77) + "..." : desc;
+      return { label, detail: truncated };
     }
-    case "WebSearch": {
-      display = `${dim("Search")} ${cyan((input.query as string) ?? "")}`;
-      break;
-    }
+    case "WebSearch":
+      return { label: "Search", detail: (input.query as string) ?? "" };
     case "AskUserQuestion": {
       const q = (input.question as string) ?? "";
-      display = `${dim("Ask")} ${cyan(q.length > 120 ? q.slice(0, 117) + "..." : q)}`;
-      break;
+      return { label: "Ask", detail: q.length > 120 ? q.slice(0, 117) + "..." : q };
     }
-    case "EnterPlanMode": {
-      display = `${dim("Mode")} ${cyan("entering plan mode")}`;
-      break;
-    }
-    case "ExitPlanMode": {
-      display = `${dim("Mode")} ${cyan("exiting plan mode")}`;
-      break;
-    }
+    case "EnterPlanMode":
+      return { label: "Mode", detail: "entering plan mode" };
+    case "ExitPlanMode":
+      return { label: "Mode", detail: "exiting plan mode" };
     case "TaskCreate": {
       const desc = (input.description as string) ?? "";
-      const truncated = desc.length > 100 ? desc.slice(0, 97) + "..." : desc;
-      display = `${dim("Task")} ${cyan("+")} ${truncated}`;
-      break;
+      return { label: "Task", detail: `+ ${desc.length > 100 ? desc.slice(0, 97) + "..." : desc}` };
     }
     case "TaskUpdate": {
       const id = (input.id as string) ?? "";
       const status = input.status as string | undefined;
-      const parts = [id];
-      if (status) parts.push(`-> ${status}`);
-      display = `${dim("Task")} ${cyan(parts.join(" "))}`;
-      break;
+      return { label: "Task", detail: `${id}${status ? ` → ${status}` : ""}` };
     }
-    case "TaskList": {
-      display = `${dim("Task")} ${cyan("list")}`;
-      break;
-    }
-    case "TaskGet": {
-      const id = (input.id as string) ?? "";
-      display = `${dim("Task")} ${cyan(id)}`;
-      break;
-    }
+    case "TaskList":
+      return { label: "Task", detail: "list" };
+    case "TaskGet":
+      return { label: "Task", detail: (input.id as string) ?? "" };
     default: {
       const params = Object.entries(input)
         .filter(([, v]) => typeof v === "string" && (v as string).length < 120)
-        .map(([k, v]) => `${dim(k + "=")}${cyan(JSON.stringify(v))}`)
+        .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
         .join(" ");
-      display = `${boldMagenta("⚡")} ${bold(name)} ${params}`;
+      return { label: name, detail: params };
     }
   }
+}
 
-  process.stderr.write(`\n  ${display}\n`);
+export function renderToolCall(name: string, input: Record<string, unknown>): void {
+  const { label, detail, body } = formatToolDetail(name, input);
+  process.stderr.write(`\n${boxHeader(label, detail)}\n`);
+  if (body) {
+    process.stderr.write(`${boxLine(body)}\n`);
+  }
 }
 
 export function renderToolResult(result: string, isError: boolean): void {
@@ -194,38 +190,37 @@ export function renderToolResult(result: string, isError: boolean): void {
     const lines = result.split("\n");
     const MAX_LINES = 20;
     const display = lines.length > MAX_LINES
-      ? [...lines.slice(0, MAX_LINES), dim(`  ... (${lines.length - MAX_LINES} more lines)`)]
+      ? [...lines.slice(0, MAX_LINES), `... (${lines.length - MAX_LINES} more lines)`]
       : lines;
 
-    process.stderr.write(`  ${red("✗")} `);
-    if (display.length === 1) {
-      process.stderr.write(red(display[0]) + "\n");
-    } else {
-      process.stderr.write("\n");
-      for (const line of display) {
-        process.stderr.write(`    ${red(line)}\n`);
-      }
+    process.stderr.write(`${boxLine(`${red("✗")} ${red(display[0])}`)}\n`);
+    for (let i = 1; i < display.length; i++) {
+      process.stderr.write(`${boxLine(`  ${red(display[i])}`)}\n`);
     }
+    process.stderr.write(`${boxFooter()}\n`);
   } else if (verboseOutput) {
     const lines = result.split("\n");
     const MAX_VERBOSE = 100;
     const display = lines.length > MAX_VERBOSE
-      ? [...lines.slice(0, MAX_VERBOSE), `  ... (${lines.length - MAX_VERBOSE} more lines)`]
+      ? [...lines.slice(0, MAX_VERBOSE), `... (${lines.length - MAX_VERBOSE} more lines)`]
       : lines;
-    process.stderr.write(`  ${green("✓")}\n`);
+    process.stderr.write(`${boxLine(`${green("✓")}`)}\n`);
     for (const line of display) {
-      process.stderr.write(`    ${dim(line)}\n`);
+      process.stderr.write(`${boxLine(`  ${dim(line)}`)}\n`);
     }
+    process.stderr.write(`${boxFooter()}\n`);
   } else {
     const lines = result.split("\n");
     const first = lines[0].length > 100 ? lines[0].slice(0, 97) + "..." : lines[0];
     const suffix = lines.length > 1 ? dim(` (+${lines.length - 1} lines)`) : "";
-    process.stderr.write(`  ${green("✓")} ${dim(first)}${suffix}\n`);
+    process.stderr.write(`${boxLine(`${green("✓")} ${dim(first)}${suffix}`)}\n`);
+    process.stderr.write(`${boxFooter()}\n`);
   }
 }
 
 export function renderPermissionDenied(toolName: string): void {
-  process.stderr.write(`  ${yellow("⊘")} ${dim(`Permission denied: ${toolName}`)}\n`);
+  process.stderr.write(`${boxLine(`${yellow("⊘")} ${dim(`Permission denied: ${toolName}`)}`)}\n`);
+  process.stderr.write(`${boxFooter()}\n`);
 }
 
 export function renderDiff(oldStr: string, newStr: string): void {
@@ -233,13 +228,91 @@ export function renderDiff(oldStr: string, newStr: string): void {
   const newLines = newStr.split("\n");
 
   for (const line of oldLines) {
-    process.stderr.write(`    ${red("- " + line)}\n`);
+    process.stderr.write(`${boxLine(red("- " + line))}\n`);
   }
   for (const line of newLines) {
-    process.stderr.write(`    ${green("+ " + line)}\n`);
+    process.stderr.write(`${boxLine(green("+ " + line))}\n`);
   }
 }
 
 export function renderError(message: string): void {
   process.stderr.write(`\n${red("Error:")} ${message}\n`);
+}
+
+// ── Thinking block borders ──
+
+export function renderThinkingStart(): void {
+  process.stderr.write(`\n${boxHeader("thinking")}\n`);
+}
+
+export function renderThinkingEnd(): void {
+  process.stderr.write(`${boxFooter()}\n`);
+}
+
+export function renderThinkingLine(text: string): string {
+  // Format thinking text to have box line prefix on each line
+  let out = "";
+  for (const c of text) {
+    out += c;
+  }
+  return out;
+}
+
+// ── Permission prompt (box-integrated) ──
+
+export function renderPermissionPrompt(toolName: string): string {
+  return `${boxLine(`${yellow("?")} Allow ${bold(toolName)}? ${dim("[Y]es / [n]o / [a]lways")} `)}`;
+}
+
+export function renderPermissionResponse(response: string): void {
+  process.stderr.write(dim(response) + "\n");
+}
+
+// ── Startup banner ──
+
+export function renderBanner(opts: {
+  model: string;
+  apiUrl: string;
+  cwd: string;
+  sessionId: string;
+  mode: string;
+  mcpServers?: string[];
+  lspServers?: string[];
+  agents?: string[];
+  resumed?: { id: string; messageCount: number };
+  forked?: { fromId: string; messageCount: number };
+}): void {
+  const w = Math.min(process.stdout.columns ?? 60, 60);
+  const line = "─".repeat(w - 4);
+
+  console.log();
+  console.log(`  ${dimCyan(line)}`);
+  console.log();
+  console.log(`  ${boldCyan("◆")} ${bold("Claude Code")} ${dim(`(${opts.model})`)}`);
+  console.log();
+
+  const info: [string, string][] = [
+    ["cwd", opts.cwd],
+    ["session", opts.sessionId],
+    ["mode", opts.mode],
+  ];
+
+  if (opts.apiUrl !== "https://api.anthropic.com") {
+    info.unshift(["gateway", opts.apiUrl]);
+  }
+  if (opts.mcpServers?.length) info.push(["mcp", opts.mcpServers.join(", ")]);
+  if (opts.lspServers?.length) info.push(["lsp", opts.lspServers.join(", ")]);
+  if (opts.agents?.length) info.push(["agents", opts.agents.join(", ")]);
+  if (opts.resumed) info.push(["resumed", `${opts.resumed.id} (${opts.resumed.messageCount} messages)`]);
+  if (opts.forked) info.push(["forked", `from ${opts.forked.fromId} (${opts.forked.messageCount} messages)`]);
+
+  const maxLabel = Math.max(...info.map(([k]) => k.length));
+  for (const [label, value] of info) {
+    console.log(`  ${dimCyan("│")} ${dim(label.padEnd(maxLabel))}  ${dim(value)}`);
+  }
+
+  console.log();
+  console.log(`  ${dim("Type")} ${boldCyan("/help")} ${dim("for commands, Shift+Tab to switch mode")}`);
+  console.log(`  ${dimCyan(line)}`);
+  console.log();
 }

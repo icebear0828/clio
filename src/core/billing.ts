@@ -11,7 +11,7 @@ export function createBillingHeader(): SystemPromptBlock {
 
   let gitHash = "unknown";
   try {
-    gitHash = execSync("git rev-parse --short HEAD", { timeout: 3000 })
+    gitHash = execSync("git rev-parse --short HEAD", { timeout: 3000, stdio: ["pipe", "pipe", "pipe"] })
       .toString()
       .trim();
   } catch {

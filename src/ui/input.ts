@@ -19,6 +19,7 @@ const BASE_SLASH_COMMANDS: Array<{ cmd: string; desc: string }> = [
   { cmd: "/help",     desc: "Show commands" },
   { cmd: "/init",     desc: "Generate AGENTS.md" },
   { cmd: "/model",    desc: "Show/switch model" },
+  { cmd: "/new",      desc: "New conversation" },
   { cmd: "/pr",       desc: "Create pull request" },
   { cmd: "/review",   desc: "Review git diff" },
   { cmd: "/sessions", desc: "List saved sessions" },

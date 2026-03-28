@@ -5,7 +5,7 @@ import { compactConversation } from "./core/compact.js";
 import { initClaudeMd } from "./commands/init.js";
 import { commitCommand, prCommand, reviewCommand } from "./commands/git-commands.js";
 import { SessionManager } from "./core/session.js";
-import { bold, dim, red, green, yellow, cyan, blue, magenta, boldCyan, dimCyan, toggleVerbose, getTheme, setTheme, type Theme } from "./ui/render.js";
+import { bold, dim, red, green, yellow, cyan, blue, magenta, boldCyan, dimCyan, toggleVerbose, getTheme, setTheme, renderBanner, type Theme } from "./ui/render.js";
 import { estimateCost, formatUSD } from "./core/pricing.js";
 import { streamRequest } from "./core/client.js";
 import { buildSystemPrompt } from "./core/context.js";
@@ -648,6 +648,12 @@ async function main(): Promise<void> {
   const reader = new InputReader();
   const messages: Message[] = [];
   const sessionUsage: UsageStats = { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 };
+
+  // Wire permission prompts to pause/resume escape handler
+  permissionManager.setPromptHooks(
+    () => escapeControl?.pause(),
+    () => escapeControl?.resume(),
+  );
   const sectionCache = new SectionCache();
   let session = new SessionManager(config.model);
   const statusBar = new StatusBar();
@@ -698,37 +704,19 @@ async function main(): Promise<void> {
   }
 
   // ── Startup banner ──
-  console.log();
-  console.log(dimCyan("  ──────────────────────────────────────"));
-  console.log();
-  console.log(`  ${boldCyan("◆")} ${bold("Claude Code")} ${dim(`(${config.model})`)}`);
-  console.log();
-  console.log(`  ${dimCyan("│")} ${dim("Gateway")}   ${dim(config.apiUrl)}`);
-  console.log(`  ${dimCyan("│")} ${dim("cwd")}       ${dim(process.cwd())}`);
-  console.log(`  ${dimCyan("│")} ${dim("session")}   ${dim(session.getId())}`);
-  console.log(`  ${dimCyan("│")} ${dim("mode")}      ${dim(config.permissionMode)}`);
-  if (mcpMgr) {
-    const names = mcpMgr.getServerNames();
-    console.log(`  ${dimCyan("│")} ${dim("mcp")}       ${dim(names.join(", "))}`);
-  }
-  if (lspMgr) {
-    const names = lspMgr.getServerNames();
-    console.log(`  ${dimCyan("│")} ${dim("lsp")}       ${dim(names.join(", "))}`);
-  }
   const customAgents = listCustomAgents();
-  if (customAgents.length > 0) {
-    console.log(`  ${dimCyan("│")} ${dim("agents")}    ${dim(customAgents.join(", "))}`);
-  }
-  if (resumeId && messages.length > 0) {
-    console.log(`  ${dimCyan("│")} ${dim("resumed")}   ${dim(`${resumeId} (${messages.length} messages)`)}`);
-  }
-  if (forkSessionId && messages.length > 0) {
-    console.log(`  ${dimCyan("│")} ${dim("forked")}    ${dim(`from ${forkSessionId} (${messages.length} messages)`)}`);
-  }
-  console.log();
-  console.log(`  ${dim("Type")} ${boldCyan("/help")} ${dim("for commands")}`);
-  console.log(dimCyan("  ──────────────────────────────────────"));
-  console.log();
+  renderBanner({
+    model: config.model,
+    apiUrl: config.apiUrl,
+    cwd: process.cwd(),
+    sessionId: session.getId(),
+    mode: config.permissionMode,
+    mcpServers: mcpMgr?.getServerNames(),
+    lspServers: lspMgr?.getServerNames(),
+    agents: customAgents.length > 0 ? customAgents : undefined,
+    resumed: resumeId && messages.length > 0 ? { id: resumeId, messageCount: messages.length } : undefined,
+    forked: forkSessionId && messages.length > 0 ? { fromId: forkSessionId, messageCount: messages.length } : undefined,
+  });
 
   statusBar.init(config.model, session.getId(), config.permissionMode);
     if (settings.statusBar?.fields) {
@@ -800,7 +788,7 @@ async function main(): Promise<void> {
       continue;
     }
 
-    if (trimmed === "/clear") {
+    if (trimmed === "/clear" || trimmed === "/new") {
       messages.length = 0;
       taskStore.clear();
       sectionCache.clear();
@@ -1081,6 +1069,7 @@ async function main(): Promise<void> {
     /doctor       System health check
     /init         Generate AGENTS.md for this project
     /model [m]    Show or switch model
+    /new          New conversation (same as /clear)
     /pr           Generate and create pull request
     /review       Code review current changes
     /search <q>   Search conversation history

@@ -2,7 +2,7 @@ import { streamRequest } from "./client.js";
 import { compactConversation } from "./compact.js";
 import { executeTool, buildToolsForRequest, DEFERRED_TOOL_NAMES } from "../tools/index.js";
 import { getMcpToolDefinitions } from "../tools/mcp.js";
-import { renderToolCall, renderToolResult, renderPermissionDenied, renderDiff, startSpinner, dim } from "../ui/render.js";
+import { renderToolCall, renderToolResult, renderPermissionDenied, renderDiff, startSpinner, dim, dimCyan, renderThinkingStart, renderThinkingEnd } from "../ui/render.js";
 import type { PermissionManager } from "./permissions.js";
 import { buildSystemSections } from "./system-prompt.js";
 import { SectionCache } from "./section-cache.js";
@@ -141,7 +141,7 @@ export async function runAgentLoop(
         };
         if (block.type === "thinking") {
           thinkingLineStart = true;
-          process.stderr.write(dim("\n  ─── thinking ───\n"));
+          renderThinkingStart();
         }
       }
 
@@ -163,7 +163,7 @@ export async function runAgentLoop(
           const t = delta.thinking as string;
           let out = "";
           for (const c of t) {
-            if (thinkingLineStart) { out += "  "; thinkingLineStart = false; }
+            if (thinkingLineStart) { out += `  ${dimCyan("│")} `; thinkingLineStart = false; }
             out += c;
             if (c === "\n") thinkingLineStart = true;
           }
@@ -174,7 +174,7 @@ export async function runAgentLoop(
 
       if (type === "content_block_stop" && current) {
         if (current.type === "thinking" && current.thinking) {
-          process.stderr.write(dim("\n  ───\n"));
+          renderThinkingEnd();
         }
         if (current.type === "text") {
           contentBlocks.push({ type: "text", text: current.text });

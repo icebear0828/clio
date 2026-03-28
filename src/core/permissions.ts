@@ -1,6 +1,6 @@
 import { stdin } from "node:process";
 import * as readline from "node:readline/promises";
-import { bold, dim } from "../ui/render.js";
+import { bold, dim, renderPermissionPrompt, renderPermissionResponse } from "../ui/render.js";
 import type { PermissionMode } from "../types.js";
 import type { ClassifierResult } from "./llm-classifier.js";
 
@@ -47,6 +47,13 @@ export class PermissionManager {
   private safeBashPatterns: RegExp[] = [];
   private dangerousBashPatterns: RegExp[] = [];
   private llmClassifier: ((toolName: string, toolInput: Record<string, unknown>) => Promise<ClassifierResult>) | null = null;
+  private onBeforePrompt: (() => void) | null = null;
+  private onAfterPrompt: (() => void) | null = null;
+
+  setPromptHooks(before: () => void, after: () => void): void {
+    this.onBeforePrompt = before;
+    this.onAfterPrompt = after;
+  }
 
   private static readonly DEFAULT_SAFE_PATTERNS = [
     "git status*", "git log*", "git diff*", "git branch*", "git show*", "git remote*",
@@ -180,8 +187,7 @@ export class PermissionManager {
   }
 
   private async promptUser(toolName: string): Promise<"allow" | "deny"> {
-    const label = `  Allow ${bold(toolName)}? ${dim("[Y]es / [n]o / [a]lways")} `;
-    process.stderr.write(label);
+    process.stderr.write(renderPermissionPrompt(toolName));
 
     // Non-TTY fallback
     if (!stdin.isTTY) {
@@ -197,32 +203,33 @@ export class PermissionManager {
       }
     }
 
+    // Pause escape handler so it doesn't steal keystrokes
+    this.onBeforePrompt?.();
+
     // Raw-mode single keypress
     return new Promise((resolve) => {
-      const wasRaw = stdin.isRaw;
-      if (!wasRaw) {
-        stdin.setRawMode(true);
-        stdin.resume();
-      }
+      stdin.setRawMode(true);
+      stdin.resume();
 
       const onData = (buf: Buffer) => {
         stdin.removeListener("data", onData);
-        if (!wasRaw) {
-          stdin.setRawMode(false);
-          stdin.pause();
-        }
+        stdin.setRawMode(false);
+        stdin.pause();
 
         const ch = buf.toString().toLowerCase().trim();
 
         if (ch === "n" || ch === "\x03") {
-          process.stderr.write(dim("no") + "\n");
+          renderPermissionResponse("no");
+          this.onAfterPrompt?.();
           resolve("deny");
         } else if (ch === "a") {
           this.alwaysAllowed.add(toolName);
-          process.stderr.write(dim("always") + "\n");
+          renderPermissionResponse("always");
+          this.onAfterPrompt?.();
           resolve("allow");
         } else {
-          process.stderr.write(dim("yes") + "\n");
+          renderPermissionResponse("yes");
+          this.onAfterPrompt?.();
           resolve("allow");
         }
       };
