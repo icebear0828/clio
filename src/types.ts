@@ -55,6 +55,8 @@ export interface Message {
 export interface UsageStats {
   inputTokens: number;
   outputTokens: number;
+  cacheCreationInputTokens: number;
+  cacheReadInputTokens: number;
 }
 
 export interface ToolPermissionControl {

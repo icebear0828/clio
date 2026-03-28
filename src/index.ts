@@ -270,6 +270,8 @@ async function runPrintMode(
       usage: {
         input_tokens: usage.inputTokens,
         output_tokens: usage.outputTokens,
+        cache_creation_input_tokens: usage.cacheCreationInputTokens,
+        cache_read_input_tokens: usage.cacheReadInputTokens,
       },
       model: config.model,
       num_turns: messages.filter((m) => m.role === "assistant").length,
@@ -376,7 +378,7 @@ async function main(): Promise<void> {
 
   const reader = new InputReader();
   const messages: Message[] = [];
-  const sessionUsage: UsageStats = { inputTokens: 0, outputTokens: 0 };
+  const sessionUsage: UsageStats = { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 };
   const sectionCache = new SectionCache();
   let session = new SessionManager(config.model);
   const statusBar = new StatusBar();
@@ -724,6 +726,8 @@ async function main(): Promise<void> {
           const turnUsage = await runAgentLoop(config, messages, permissionManager, abort.signal, settings.hooks, checkpointManager, sectionCache);
           sessionUsage.inputTokens += turnUsage.inputTokens;
           sessionUsage.outputTokens += turnUsage.outputTokens;
+          sessionUsage.cacheCreationInputTokens += turnUsage.cacheCreationInputTokens;
+          sessionUsage.cacheReadInputTokens += turnUsage.cacheReadInputTokens;
           statusBar.update(sessionUsage);
         } catch (err) {
           if (err instanceof Error && err.name === "AbortError") {
@@ -867,6 +871,8 @@ async function main(): Promise<void> {
           const turnUsage = await runAgentLoop(config, messages, permissionManager, abort.signal, settings.hooks, checkpointManager, sectionCache);
           sessionUsage.inputTokens += turnUsage.inputTokens;
           sessionUsage.outputTokens += turnUsage.outputTokens;
+          sessionUsage.cacheCreationInputTokens += turnUsage.cacheCreationInputTokens;
+          sessionUsage.cacheReadInputTokens += turnUsage.cacheReadInputTokens;
           statusBar.update(sessionUsage);
         } catch (err) {
           if (err instanceof Error && err.name === "AbortError") {
@@ -940,6 +946,8 @@ async function main(): Promise<void> {
       const turnUsage = await runAgentLoop(config, messages, permissionManager, abort.signal, settings.hooks, checkpointManager, sectionCache);
       sessionUsage.inputTokens += turnUsage.inputTokens;
       sessionUsage.outputTokens += turnUsage.outputTokens;
+      sessionUsage.cacheCreationInputTokens += turnUsage.cacheCreationInputTokens;
+      sessionUsage.cacheReadInputTokens += turnUsage.cacheReadInputTokens;
       statusBar.update(sessionUsage);
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") {

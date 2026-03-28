@@ -59,7 +59,7 @@ export async function runAgentLoop(
 ): Promise<UsageStats> {
   let iteration = 0;
   const MAX_ITERATIONS = 25;
-  const usage: UsageStats = { inputTokens: 0, outputTokens: 0 };
+  const usage: UsageStats = { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 };
 
   const cache = sectionCache ?? new SectionCache();
 
@@ -205,6 +205,8 @@ export async function runAgentLoop(
         const msg = event.message as Record<string, unknown>;
         const u = msg?.usage as Record<string, number> | undefined;
         if (u?.input_tokens) usage.inputTokens += u.input_tokens;
+        if (u?.cache_creation_input_tokens) usage.cacheCreationInputTokens += u.cache_creation_input_tokens;
+        if (u?.cache_read_input_tokens) usage.cacheReadInputTokens += u.cache_read_input_tokens;
       }
 
       if (type === "message_delta") {

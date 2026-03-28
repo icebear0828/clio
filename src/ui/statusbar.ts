@@ -11,7 +11,7 @@ export class StatusBar {
   private sessionId = "";
   private mode: PermissionMode = "default";
   private verbose = false;
-  private usage: UsageStats = { inputTokens: 0, outputTokens: 0 };
+  private usage: UsageStats = { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 };
   private fields: StatusBarField[] = DEFAULT_FIELDS;
   private enabled: boolean;
 
