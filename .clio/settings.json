@@ -1,4 +1,5 @@
 {
+  "permissionMode": "auto",
   "hooks": {
     "post": [
       {
@@ -13,24 +14,84 @@
       }
     ]
   },
+  "autoClassifier": {
+    "enabled": true,
+    "safePatterns": [
+      "npm run build",
+      "npm run test*",
+      "npm test*",
+      "npx tsc*",
+      "npx vitest*",
+      "node dist/*",
+      "cat package.json",
+      "head *",
+      "tail *"
+    ],
+    "dangerousPatterns": [
+      "rm -rf *",
+      "rm -r *",
+      "mv /* *",
+      "cp /* *",
+      "cat /etc/*",
+      "cat ~/*",
+      "ssh *",
+      "scp *",
+      "curl * | *sh*",
+      "wget * | *sh*",
+      "chmod 777*",
+      "sudo *",
+      "kill *",
+      "pkill *",
+      "dd *",
+      "mkfs*",
+      "npm publish*",
+      "npx * --global*",
+      "pip install*",
+      "brew *",
+      "apt *",
+      "cd /*"
+    ]
+  },
   "allowRules": [
     "Edit:*",
     "Write:*",
     "Bash:npm run build",
     "Bash:npm run test*",
+    "Bash:npm test*",
     "Bash:npx tsc*",
     "Bash:npx vitest*",
+    "Bash:node dist/*",
     "Bash:git status*",
     "Bash:git diff*",
     "Bash:git log*",
     "Bash:git branch*",
+    "Bash:git show*",
+    "Bash:git stash*",
     "Bash:ls *",
-    "Bash:wc *"
+    "Bash:ls",
+    "Bash:wc *",
+    "Bash:cat package.json*",
+    "Bash:head *",
+    "Bash:tail *"
   ],
   "denyRules": [
     "Bash:rm -rf *",
+    "Bash:rm -r /*",
     "Bash:git push --force*",
+    "Bash:git push -f *",
     "Bash:git reset --hard*",
-    "Bash:npm publish*"
+    "Bash:git clean -f*",
+    "Bash:npm publish*",
+    "Bash:sudo *",
+    "Bash:ssh *",
+    "Bash:scp *",
+    "Bash:curl * | *sh*",
+    "Bash:wget * | *sh*",
+    "Bash:chmod 777*",
+    "Bash:kill *",
+    "Bash:pkill *",
+    "Bash:dd *",
+    "Bash:cat /etc/*",
+    "Bash:cd /*"
   ]
 }
