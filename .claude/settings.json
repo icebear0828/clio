@@ -1,0 +1,60 @@
+{
+  "hooks": {
+    "Edit": [
+      {
+        "matcher": "**/*.ts",
+        "hooks": [
+          {
+            "type": "afterToolResult",
+            "command": "npx tsc --noEmit 2>&1 | head -20"
+          }
+        ]
+      }
+    ],
+    "Write": [
+      {
+        "matcher": "**/*.ts",
+        "hooks": [
+          {
+            "type": "afterToolResult",
+            "command": "npx tsc --noEmit 2>&1 | head -20"
+          }
+        ]
+      }
+    ],
+    "Bash(npm run test*)": [
+      {
+        "hooks": [
+          {
+            "type": "afterToolResult",
+            "command": "echo '✓ tests completed'"
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Read",
+      "Glob",
+      "Grep",
+      "Bash(npm run build)",
+      "Bash(npm run test*)",
+      "Bash(npx tsc --noEmit*)",
+      "Bash(npx vitest*)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git branch*)",
+      "Bash(ls *)",
+      "Bash(wc *)",
+      "Bash(cat package.json*)"
+    ],
+    "deny": [
+      "Bash(rm -rf *)",
+      "Bash(git push --force*)",
+      "Bash(git reset --hard*)",
+      "Bash(npm publish*)"
+    ]
+  }
+}

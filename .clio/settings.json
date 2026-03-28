@@ -1,0 +1,36 @@
+{
+  "hooks": {
+    "post": [
+      {
+        "command": "bash scripts/tsc-gate.sh",
+        "tools": ["Edit", "Write"],
+        "timeout": 30000
+      },
+      {
+        "command": "bash scripts/test-gate.sh",
+        "tools": ["Write"],
+        "timeout": 60000
+      }
+    ]
+  },
+  "allowRules": [
+    "Edit:*",
+    "Write:*",
+    "Bash:npm run build",
+    "Bash:npm run test*",
+    "Bash:npx tsc*",
+    "Bash:npx vitest*",
+    "Bash:git status*",
+    "Bash:git diff*",
+    "Bash:git log*",
+    "Bash:git branch*",
+    "Bash:ls *",
+    "Bash:wc *"
+  ],
+  "denyRules": [
+    "Bash:rm -rf *",
+    "Bash:git push --force*",
+    "Bash:git reset --hard*",
+    "Bash:npm publish*"
+  ]
+}

@@ -256,12 +256,15 @@ export async function runAgentLoop(
         continue;
       }
 
-      const preOk = await runHooks(hooks, "pre", toolName, toolInput);
-      if (!preOk) {
+      const preResult = await runHooks(hooks, "pre", toolName, toolInput);
+      if (!preResult.ok) {
+        const msg = preResult.output.trim()
+          ? `Pre-hook blocked execution of ${toolName}.\n${preResult.output.trim()}`
+          : `Pre-hook blocked execution of ${toolName}.`;
         toolResults.push({
           type: "tool_result",
           tool_use_id: block.id,
-          content: `Pre-hook blocked execution of ${toolName}.`,
+          content: msg,
           is_error: true,
         });
         continue;
@@ -305,7 +308,11 @@ export async function runAgentLoop(
           tool_use_id: block.id,
           content: result,
         });
-        await runHooks(hooks, "post", toolName, toolInput);
+        const postResult = await runHooks(hooks, "post", toolName, toolInput);
+        if (postResult.output.trim()) {
+          const last = toolResults[toolResults.length - 1];
+          last.content += "\n\n[Hook output]\n" + postResult.output.trim();
+        }
       } catch (err) {
         stopSpin();
         const msg = err instanceof Error ? err.message : String(err);

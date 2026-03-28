@@ -23,14 +23,38 @@ const TOOL_CATEGORIES: Record<string, ToolCategory> = {
   TaskGet: "safe",
 };
 
-function compileRules(rules: string[]): RegExp[] {
+interface ParsedRule {
+  tool: string | null;  // null = bare rule (backward compat)
+  pattern: RegExp;
+}
+
+function globToRegex(glob: string): RegExp {
+  const escaped = glob
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*/g, ".*")
+    .replace(/\?/g, ".");
+  return new RegExp(`^${escaped}$`);
+}
+
+function compileRules(rules: string[]): ParsedRule[] {
   return rules.map((rule) => {
-    const escaped = rule
-      .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-      .replace(/\*/g, ".*")
-      .replace(/\?/g, ".");
-    return new RegExp(`^${escaped}$`);
+    let tool: string | null = null;
+    let glob: string;
+
+    const colonIdx = rule.indexOf(":");
+    if (colonIdx > 0 && /^[A-Za-z_]+$/.test(rule.slice(0, colonIdx))) {
+      tool = rule.slice(0, colonIdx);
+      glob = rule.slice(colonIdx + 1);
+    } else {
+      glob = rule;
+    }
+
+    return { tool, pattern: globToRegex(glob) };
   });
+}
+
+function compileGlobs(patterns: string[]): RegExp[] {
+  return patterns.map(globToRegex);
 }
 
 export interface AutoClassifierConfig {
@@ -41,8 +65,8 @@ export interface AutoClassifierConfig {
 
 export class PermissionManager {
   private alwaysAllowed = new Set<string>();
-  private allowPatterns: RegExp[];
-  private denyPatterns: RegExp[];
+  private allowPatterns: ParsedRule[];
+  private denyPatterns: ParsedRule[];
   private classifierEnabled = false;
   private safeBashPatterns: RegExp[] = [];
   private dangerousBashPatterns: RegExp[] = [];
@@ -98,8 +122,8 @@ export class PermissionManager {
     if (config.enabled) {
       const safeRules = [...PermissionManager.DEFAULT_SAFE_PATTERNS, ...(config.safePatterns ?? [])];
       const dangerousRules = [...PermissionManager.DEFAULT_DANGEROUS_PATTERNS, ...(config.dangerousPatterns ?? [])];
-      this.safeBashPatterns = compileRules(safeRules);
-      this.dangerousBashPatterns = compileRules(dangerousRules);
+      this.safeBashPatterns = compileGlobs(safeRules);
+      this.dangerousBashPatterns = compileGlobs(dangerousRules);
     }
   }
 
@@ -110,9 +134,7 @@ export class PermissionManager {
     if (toolName === "EnterPlanMode" || toolName === "ExitPlanMode") return "allow";
 
     // Deny rules — checked before everything else (safety constraint)
-    if (toolName === "Bash" && typeof toolInput.command === "string") {
-      if (this.matchesDenyRule(toolInput.command)) return "deny";
-    }
+    if (this.matchesRule(this.denyPatterns, toolName, toolInput)) return "deny";
 
     if (this.mode === "auto") {
       if (!this.classifierEnabled) return "allow";
@@ -127,12 +149,8 @@ export class PermissionManager {
 
     if (this.alwaysAllowed.has(toolName)) return "allow";
 
-    if (toolName === "Bash" && typeof toolInput.command === "string") {
-      if (this.matchesAllowRule(toolInput.command)) return "allow";
-    }
-
-    // MCP tools — check allow rules by tool name
-    if (toolName.startsWith("mcp__") && this.matchesAllowRule(toolName)) return "allow";
+    // Unified allow check: Bash commands, MCP tools, Edit/Write, etc.
+    if (this.matchesRule(this.allowPatterns, toolName, toolInput)) return "allow";
 
     return this.promptUser(toolName);
   }
@@ -145,6 +163,9 @@ export class PermissionManager {
 
     if (category === "safe") return "allow";
 
+    // Allow rules take precedence over classifier (e.g. "Edit:*")
+    if (this.matchesRule(this.allowPatterns, toolName, toolInput)) return "allow";
+
     if (toolName === "Bash" && typeof toolInput.command === "string") {
       const cmd = toolInput.command;
       if (this.dangerousBashPatterns.some((re) => re.test(cmd))) {
@@ -153,7 +174,6 @@ export class PermissionManager {
       if (this.safeBashPatterns.some((re) => re.test(cmd))) {
         return "allow";
       }
-      // Stage 1 uncertain → try Stage 2 LLM classifier
       return this.classifyStage2(toolName, toolInput);
     }
 
@@ -178,12 +198,22 @@ export class PermissionManager {
     return this.promptUser(toolName);
   }
 
-  private matchesAllowRule(value: string): boolean {
-    return this.allowPatterns.some((re) => re.test(value));
-  }
+  private matchesRule(rules: ParsedRule[], toolName: string, toolInput: Record<string, unknown>): boolean {
+    return rules.some((rule) => {
+      if (rule.tool !== null && rule.tool !== toolName) return false;
 
-  private matchesDenyRule(command: string): boolean {
-    return this.denyPatterns.some((re) => re.test(command));
+      if (toolName === "Bash" && typeof toolInput.command === "string") {
+        return rule.pattern.test(toolInput.command);
+      }
+      if (toolName.startsWith("mcp__") && rule.tool === null) {
+        return rule.pattern.test(toolName);
+      }
+      if (typeof toolInput.file_path === "string") {
+        return rule.pattern.test(toolInput.file_path);
+      }
+      // Blanket rule like "Edit:*" — pattern is /^.*$/ which matches ""
+      return rule.pattern.test("");
+    });
   }
 
   private async promptUser(toolName: string): Promise<"allow" | "deny"> {

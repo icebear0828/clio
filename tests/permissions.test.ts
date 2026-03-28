@@ -115,6 +115,44 @@ describe("PermissionManager", () => {
     });
   });
 
+  describe("Tool:pattern prefixed rules", () => {
+    it("Edit:* auto-allows all Edit calls", async () => {
+      const pm = new PermissionManager("default", ["Edit:*"]);
+      expect(await pm.check("Edit", { file_path: "src/foo.ts" })).toBe("allow");
+      expect(await pm.check("Edit", { file_path: "any/path" })).toBe("allow");
+    });
+
+    it("Write:src/* allows writes under src/ only", async () => {
+      const pm = new PermissionManager("default", ["Write:src/*"]);
+      expect(await pm.check("Write", { file_path: "src/foo.ts" })).toBe("allow");
+      const spy = vi.spyOn(pm as never, "promptUser").mockResolvedValue("deny");
+      expect(await pm.check("Write", { file_path: "etc/foo.ts" })).toBe("deny");
+      spy.mockRestore();
+    });
+
+    it("Bash:npm run test* prefixed format works", async () => {
+      const pm = new PermissionManager("default", ["Bash:npm run test*"]);
+      expect(await pm.check("Bash", { command: "npm run test" })).toBe("allow");
+      expect(await pm.check("Bash", { command: "npm run test:watch" })).toBe("allow");
+    });
+
+    it("bare rules still work for backward compat", async () => {
+      const pm = new PermissionManager("default", ["git status*"]);
+      expect(await pm.check("Bash", { command: "git status --short" })).toBe("allow");
+    });
+
+    it("prefixed deny rules block tools", async () => {
+      const pm = new PermissionManager("default", [], ["Bash:rm -rf *"]);
+      expect(await pm.check("Bash", { command: "rm -rf /home" })).toBe("deny");
+    });
+
+    it("Edit:* works in auto mode with classifier", async () => {
+      const pm = new PermissionManager("auto", ["Edit:*"]);
+      pm.setAutoClassifier({ enabled: true });
+      expect(await pm.check("Edit", { file_path: "src/foo.ts" })).toBe("allow");
+    });
+  });
+
   describe("tool categorization", () => {
     it("treats unknown tools as dangerous", async () => {
       const pm = new PermissionManager("plan");
