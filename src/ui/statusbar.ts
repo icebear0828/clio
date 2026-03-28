@@ -1,6 +1,6 @@
 import { dim, cyan } from "./render.js";
-import { estimateCost, formatUSD } from "./pricing.js";
-import type { PermissionMode, UsageStats } from "./types.js";
+import { estimateCost, formatUSD } from "../core/pricing.js";
+import type { PermissionMode, UsageStats } from "../types.js";
 
 export type StatusBarField = "model" | "mode" | "cost" | "tokens" | "session" | "verbose";
 

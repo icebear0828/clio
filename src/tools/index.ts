@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import fg from "fast-glob";
-import type { PermissionMode, ToolContext } from "./types.js";
+import type { PermissionMode, ToolContext } from "../types.js";
 import { taskStore, formatTaskList, formatTaskDetail, type TaskStatus } from "./tasks.js";
 import type { McpManager } from "./mcp.js";
 import type { SubAgentOptions } from "./subagent.js";
@@ -541,7 +541,7 @@ async function toolWebFetch(input: { url: string; max_length?: number }): Promis
   const maxLen = input.max_length ?? 50_000;
 
   const response = await fetch(input.url, {
-    headers: { "User-Agent": "Mozilla/5.0 (compatible; c2a-cli/0.1)" },
+    headers: { "User-Agent": "Mozilla/5.0 (compatible; clio-cli/0.1)" },
     signal: AbortSignal.timeout(15_000),
     redirect: "follow",
   });
@@ -587,7 +587,7 @@ async function toolAgent(input: {
 
   let options: SubAgentOptions | undefined;
   if (input.subagent_type) {
-    const { getCustomAgent, listCustomAgents } = await import("./custom-agents.js");
+    const { getCustomAgent, listCustomAgents } = await import("../commands/custom-agents.js");
     const def = getCustomAgent(input.subagent_type);
     if (!def) {
       const available = listCustomAgents();
@@ -666,7 +666,7 @@ async function toolWebSearch(input: { query: string; limit?: number }): Promise<
   const limit = input.limit ?? 5;
   const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(input.query)}`;
   const resp = await fetch(url, {
-    headers: { "User-Agent": "Mozilla/5.0 (compatible; c2a-cli/1.0)" },
+    headers: { "User-Agent": "Mozilla/5.0 (compatible; clio-cli/1.0)" },
     signal: AbortSignal.timeout(15_000),
     redirect: "follow",
   });

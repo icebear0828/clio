@@ -1,14 +1,14 @@
 import { streamRequest } from "./client.js";
 import { compactConversation } from "./compact.js";
-import { executeTool, TOOL_DEFINITIONS } from "./tools.js";
-import { getMcpToolDefinitions } from "./mcp.js";
-import { renderToolCall, renderToolResult, renderPermissionDenied, renderDiff, startSpinner, dim } from "./render.js";
+import { executeTool, TOOL_DEFINITIONS } from "../tools/index.js";
+import { getMcpToolDefinitions } from "../tools/mcp.js";
+import { renderToolCall, renderToolResult, renderPermissionDenied, renderDiff, startSpinner, dim } from "../ui/render.js";
 import type { PermissionManager } from "./permissions.js";
 import { buildSystemPrompt } from "./context.js";
-import { MarkdownRenderer } from "./markdown.js";
-import { runHooks, type HooksConfig } from "./hooks.js";
-import type { Config, ContentBlock, Message, UsageStats } from "./types.js";
-import type { CheckpointManager } from "./checkpoint.js";
+import { MarkdownRenderer } from "../ui/markdown.js";
+import { runHooks, type HooksConfig } from "../tools/hooks.js";
+import type { Config, ContentBlock, Message, UsageStats } from "../types.js";
+import type { CheckpointManager } from "../tools/checkpoint.js";
 
 export function getContextLimit(model: string): number {
   const m = model.toLowerCase();

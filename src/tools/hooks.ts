@@ -1,6 +1,6 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
-import { dim, yellow } from "./render.js";
+import { dim, yellow } from "../ui/render.js";
 
 const execAsync = promisify(exec);
 
@@ -21,7 +21,7 @@ export interface HooksConfig {
  * Post-hooks: always run, non-zero exits are logged but don't block.
  *
  * Hook commands receive env vars:
- *   C2A_TOOL_NAME, C2A_TOOL_INPUT (JSON), C2A_HOOK_PHASE
+ *   CLIO_TOOL_NAME, CLIO_TOOL_INPUT (JSON), CLIO_HOOK_PHASE
  */
 export async function runHooks(
   hooks: HooksConfig | undefined,
@@ -34,9 +34,9 @@ export async function runHooks(
 
   const env = {
     ...process.env,
-    C2A_TOOL_NAME: toolName,
-    C2A_TOOL_INPUT: JSON.stringify(toolInput),
-    C2A_HOOK_PHASE: phase,
+    CLIO_TOOL_NAME: toolName,
+    CLIO_TOOL_INPUT: JSON.stringify(toolInput),
+    CLIO_HOOK_PHASE: phase,
   };
 
   for (const hook of hookList) {

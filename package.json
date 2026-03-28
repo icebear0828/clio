@@ -1,9 +1,9 @@
 {
-  "name": "@claude2api/cli",
+  "name": "clio-cli",
   "version": "0.0.1",
   "type": "module",
   "bin": {
-    "c2a": "./dist/index.js"
+    "clio": "./dist/index.js"
   },
   "scripts": {
     "build": "tsc",

@@ -1,7 +1,7 @@
 import { stdin } from "node:process";
 import * as readline from "node:readline/promises";
-import { bold, dim } from "./render.js";
-import type { PermissionMode } from "./types.js";
+import { bold, dim } from "../ui/render.js";
+import type { PermissionMode } from "../types.js";
 
 type ToolCategory = "safe" | "dangerous" | "write";
 

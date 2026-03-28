@@ -12,8 +12,8 @@ export interface WorktreeInfo {
 
 export async function createWorktree(): Promise<WorktreeInfo> {
   const hex = crypto.randomBytes(4).toString("hex");
-  const branchName = `c2a-agent-${hex}`;
-  const worktreePath = path.resolve(".c2a", "worktrees", branchName);
+  const branchName = `clio-agent-${hex}`;
+  const worktreePath = path.resolve(".clio", "worktrees", branchName);
 
   await execAsync(`git worktree add "${worktreePath}" -b "${branchName}"`);
   return { worktreePath, branchName };

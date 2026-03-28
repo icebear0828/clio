@@ -1,26 +1,26 @@
 #!/usr/bin/env node
 
-import { runAgentLoop, getContextLimit } from "./agent.js";
-import { compactConversation } from "./compact.js";
-import { initClaudeMd } from "./init.js";
-import { commitCommand, prCommand, reviewCommand } from "./git-commands.js";
-import { SessionManager } from "./session.js";
-import { bold, dim, red, green, yellow, cyan, blue, magenta, boldCyan, dimCyan, toggleVerbose, getTheme, setTheme, type Theme } from "./render.js";
-import { estimateCost, formatUSD } from "./pricing.js";
-import { streamRequest } from "./client.js";
-import { buildSystemPrompt } from "./context.js";
-import { MarkdownRenderer } from "./markdown.js";
-import { PermissionManager } from "./permissions.js";
-import { InputReader } from "./input.js";
-import { loadSettings, getSettingsInfo, type Settings } from "./settings.js";
-import { setAllowOutsideCwd, setToolContext, setMcpManager } from "./tools.js";
-import { McpManager, setGlobalMcpManager } from "./mcp.js";
-import { taskStore } from "./tasks.js";
-import { loadCustomAgents, listCustomAgents } from "./custom-agents.js";
-import { parseInputWithImages } from "./image.js";
-import { StatusBar } from "./statusbar.js";
-import { FileCompleter, resolveFileReferences } from "./file-completions.js";
-import { CheckpointManager } from "./checkpoint.js";
+import { runAgentLoop, getContextLimit } from "./core/agent.js";
+import { compactConversation } from "./core/compact.js";
+import { initClaudeMd } from "./commands/init.js";
+import { commitCommand, prCommand, reviewCommand } from "./commands/git-commands.js";
+import { SessionManager } from "./core/session.js";
+import { bold, dim, red, green, yellow, cyan, blue, magenta, boldCyan, dimCyan, toggleVerbose, getTheme, setTheme, type Theme } from "./ui/render.js";
+import { estimateCost, formatUSD } from "./core/pricing.js";
+import { streamRequest } from "./core/client.js";
+import { buildSystemPrompt } from "./core/context.js";
+import { MarkdownRenderer } from "./ui/markdown.js";
+import { PermissionManager } from "./core/permissions.js";
+import { InputReader } from "./ui/input.js";
+import { loadSettings, getSettingsInfo, type Settings } from "./core/settings.js";
+import { setAllowOutsideCwd, setToolContext, setMcpManager } from "./tools/index.js";
+import { McpManager, setGlobalMcpManager } from "./tools/mcp.js";
+import { taskStore } from "./tools/tasks.js";
+import { loadCustomAgents, listCustomAgents } from "./commands/custom-agents.js";
+import { parseInputWithImages } from "./ui/image.js";
+import { StatusBar } from "./ui/statusbar.js";
+import { FileCompleter, resolveFileReferences } from "./ui/file-completions.js";
+import { CheckpointManager } from "./tools/checkpoint.js";
 import { stdin } from "node:process";
 import type { ApiFormat, Config, Message, PermissionMode, UsageStats } from "./types.js";
 
@@ -118,9 +118,9 @@ const VALID_MODES: PermissionMode[] = ["default", "auto", "plan"];
 
 function loadConfig(settings: Settings): { config: Config; resumeId?: string; forkSessionId?: string; cliAllowRules: string[] } {
   const config: Config = {
-    apiUrl: settings.apiUrl ?? process.env.CLAUDE2API_URL ?? process.env.ANTHROPIC_BASE_URL ?? "https://api.anthropic.com",
-    apiKey: settings.apiKey ?? process.env.CLAUDE2API_KEY ?? process.env.ANTHROPIC_API_KEY ?? "",
-    model: settings.model ?? process.env.CLAUDE2API_MODEL ?? "claude-sonnet-4-20250514",
+    apiUrl: settings.apiUrl ?? process.env.CLIO_API_URL ?? process.env.ANTHROPIC_BASE_URL ?? "https://api.anthropic.com",
+    apiKey: settings.apiKey ?? process.env.CLIO_API_KEY ?? process.env.ANTHROPIC_API_KEY ?? "",
+    model: settings.model ?? process.env.CLIO_MODEL ?? "claude-sonnet-4-20250514",
     permissionMode: settings.permissionMode ?? "default",
     thinkingBudget: settings.thinkingBudget ?? 0,
     apiFormat: settings.apiFormat ?? "anthropic",
@@ -151,15 +151,15 @@ function loadConfig(settings: Settings): { config: Config; resumeId?: string; fo
     } else if (args[i] === "--dangerously-skip-permissions") {
       config.permissionMode = "auto";
     } else if (args[i] === "--version" || args[i] === "-v") {
-      console.log("c2a 0.0.1");
+      console.log("clio 0.0.1");
       process.exit(0);
     } else if (args[i] === "--help" || args[i] === "-h") {
-      console.log(`Usage: c2a [options]
+      console.log(`Usage: clio [options]
 
 Options:
-  --api-url <url>          API base URL (env: CLAUDE2API_URL or ANTHROPIC_BASE_URL)
-  --api-key <key>          API key    (env: CLAUDE2API_KEY or ANTHROPIC_API_KEY)
-  --model   <model>        Model name (env: CLAUDE2API_MODEL, default: claude-sonnet-4-20250514)
+  --api-url <url>          API base URL (env: CLIO_API_URL or ANTHROPIC_BASE_URL)
+  --api-key <key>          API key    (env: CLIO_API_KEY or ANTHROPIC_API_KEY)
+  --model   <model>        Model name (env: CLIO_MODEL, default: claude-sonnet-4-20250514)
   --resume  <id>           Resume a previous session
   --fork-session <id>    Fork from an existing session
   --thinking <tokens>      Enable extended thinking with budget (e.g. 10000)
@@ -175,7 +175,7 @@ Options:
   }
 
   if (!config.apiKey) {
-    console.error(red("Error: API key required. Set CLAUDE2API_KEY env var or use --api-key"));
+    console.error(red("Error: API key required. Set CLIO_API_KEY env var or use --api-key"));
     process.exit(1);
   }
 
@@ -490,7 +490,7 @@ async function main(): Promise<void> {
     }
 
     if (trimmed === "/doctor") {
-      const { runDoctor } = await import("./doctor.js");
+      const { runDoctor } = await import("./commands/doctor.js");
       const result = await runDoctor(config.apiUrl, config.apiKey);
       process.stderr.write(result + "\n");
       continue;

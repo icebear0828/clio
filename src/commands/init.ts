@@ -3,8 +3,8 @@ import * as path from "node:path";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import fg from "fast-glob";
-import { apiRequest } from "./client.js";
-import type { Config } from "./types.js";
+import { apiRequest } from "../core/client.js";
+import type { Config } from "../types.js";
 
 const execAsync = promisify(exec);
 

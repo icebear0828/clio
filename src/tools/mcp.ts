@@ -114,7 +114,7 @@ class McpClient {
     const initResult = await this.sendRequest("initialize", {
       protocolVersion: "2024-11-05",
       capabilities: {},
-      clientInfo: { name: "c2a", version: "0.0.1" },
+      clientInfo: { name: "clio", version: "0.0.1" },
     });
 
     if (!initResult) {

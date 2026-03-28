@@ -1,8 +1,8 @@
-import { streamRequest } from "./client.js";
-import { buildSystemPrompt } from "./context.js";
-import { TOOL_DEFINITIONS, executeTool } from "./tools.js";
+import { streamRequest } from "../core/client.js";
+import { buildSystemPrompt } from "../core/context.js";
+import { TOOL_DEFINITIONS, executeTool } from "./index.js";
 import { getMcpToolDefinitions } from "./mcp.js";
-import type { Config, ContentBlock, Message } from "./types.js";
+import type { Config, ContentBlock, Message } from "../types.js";
 
 const MAX_ITERATIONS = 15;
 

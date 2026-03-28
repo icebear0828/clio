@@ -1,17 +1,17 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
-import type { PermissionMode, ApiFormat } from "./types.js";
-import type { HooksConfig } from "./hooks.js";
-import type { StatusBarField } from "./statusbar.js";
+import type { PermissionMode, ApiFormat } from "../types.js";
+import type { HooksConfig } from "../tools/hooks.js";
+import type { StatusBarField } from "../ui/statusbar.js";
 
-// ~/.c2a/
-const GLOBAL_DIR = path.join(os.homedir(), ".c2a");
+// ~/.clio/
+const GLOBAL_DIR = path.join(os.homedir(), ".clio");
 const GLOBAL_SETTINGS = path.join(GLOBAL_DIR, "settings.json");
 const GLOBAL_LOCAL = path.join(GLOBAL_DIR, "settings.local.json");
 
-// .c2a/ in project root
-const PROJECT_DIR = ".c2a";
+// .clio/ in project root
+const PROJECT_DIR = ".clio";
 const PROJECT_SETTINGS = path.join(PROJECT_DIR, "settings.json");
 const PROJECT_LOCAL = path.join(PROJECT_DIR, "settings.local.json");
 
@@ -98,10 +98,10 @@ function mergeSettings(base: Settings, override: Settings): Settings {
 /**
  * Load settings with 4-level merge hierarchy:
  *
- *   ~/.c2a/settings.json          (global, committed)
- *   ~/.c2a/settings.local.json    (global, gitignored — secrets)
- *   .c2a/settings.json            (project, committed)
- *   .c2a/settings.local.json      (project, gitignored — secrets)
+ *   ~/.clio/settings.json          (global, committed)
+ *   ~/.clio/settings.local.json    (global, gitignored — secrets)
+ *   .clio/settings.json            (project, committed)
+ *   .clio/settings.local.json      (project, gitignored — secrets)
  *
  * Later files override earlier ones. Arrays concatenate.
  */

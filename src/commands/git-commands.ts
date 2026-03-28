@@ -4,9 +4,9 @@ import * as readline from "node:readline/promises";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
-import { apiRequest } from "./client.js";
-import { bold, dim, red, green, cyan } from "./render.js";
-import type { Config } from "./types.js";
+import { apiRequest } from "../core/client.js";
+import { bold, dim, red, green, cyan } from "../ui/render.js";
+import type { Config } from "../types.js";
 
 const execAsync = promisify(exec);
 const run = (cmd: string) =>
@@ -97,7 +97,7 @@ export async function commitCommand(config: Config): Promise<void> {
   }
 
   // Commit via temp file (avoids shell escaping issues across platforms)
-  const tmpFile = path.join(os.tmpdir(), `c2a-commit-${Date.now()}.txt`);
+  const tmpFile = path.join(os.tmpdir(), `clio-commit-${Date.now()}.txt`);
   try {
     await fs.writeFile(tmpFile, finalMessage, "utf-8");
     await run(`git commit -F "${tmpFile}"`);
@@ -197,7 +197,7 @@ export async function prCommand(config: Config): Promise<void> {
   }
 
   // Create PR via temp file for body (avoids shell escaping issues)
-  const bodyFile = path.join(os.tmpdir(), `c2a-pr-body-${Date.now()}.txt`);
+  const bodyFile = path.join(os.tmpdir(), `clio-pr-body-${Date.now()}.txt`);
   let prUrl: string;
   try {
     await fs.writeFile(bodyFile, body, "utf-8");

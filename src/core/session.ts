@@ -2,9 +2,9 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as crypto from "node:crypto";
-import type { Message, UsageStats } from "./types.js";
+import type { Message, UsageStats } from "../types.js";
 
-const SESSIONS_DIR = path.join(os.homedir(), ".c2a", "sessions");
+const SESSIONS_DIR = path.join(os.homedir(), ".clio", "sessions");
 
 interface SessionData {
   id: string;

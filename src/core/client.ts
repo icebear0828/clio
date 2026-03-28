@@ -1,4 +1,4 @@
-import type { Config, ContentBlock, Message } from "./types.js";
+import type { Config, ContentBlock, Message } from "../types.js";
 
 const CONNECT_TIMEOUT_MS = 30_000;
 const MAX_RETRIES = 3;

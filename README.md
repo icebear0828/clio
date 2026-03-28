@@ -1,4 +1,4 @@
-# c2a — Claude Code CLI
+# Clio — Claude Code CLI
 
 A feature-rich Claude Code clone that runs in your terminal. Connects to the Anthropic API (or any compatible endpoint) and provides an interactive agentic coding assistant with local tool execution.
 
@@ -15,7 +15,7 @@ export ANTHROPIC_API_KEY=sk-ant-xxx
 
 # Run directly (no build needed)
 cd your-project
-npx tsx /path/to/c2a/src/index.ts
+npx tsx /path/to/clio/src/index.ts
 
 # Or build first
 npx tsc
@@ -34,7 +34,7 @@ node dist/index.js
 - **Sessions** — Auto-save conversations, resume with `--resume <id>`, fork with `--fork-session <id>`
 - **Git Workflow** — `/commit`, `/pr`, `/review` commands with AI-generated messages
 - **MCP Support** — JSON-RPC 2.0 over stdio, server lifecycle management, tool discovery with `mcp__` prefix
-- **Custom Agents** — Define agents in `.c2a/agents/*.md` with front-matter (tools, model, max_iterations)
+- **Custom Agents** — Define agents in `.clio/agents/*.md` with front-matter (tools, model, max_iterations)
 - **Background Agents** — `run_in_background` for async sub-agent execution with completion notifications
 - **Worktree Isolation** — Run sub-agents in isolated git worktrees
 - **Extended Thinking** — Show Claude's reasoning process with `--thinking`
@@ -76,9 +76,9 @@ node dist/index.js
 |----------|-------------|
 | `ANTHROPIC_API_KEY` | Anthropic API key |
 | `ANTHROPIC_BASE_URL` | Custom API base URL |
-| `CLAUDE2API_KEY` | Gateway API key (alternative) |
-| `CLAUDE2API_URL` | Gateway URL (alternative) |
-| `CLAUDE2API_MODEL` | Default model |
+| `CLIO_API_KEY` | Gateway API key (alternative) |
+| `CLIO_API_URL` | Gateway URL (alternative) |
+| `CLIO_MODEL` | Default model |
 | `NO_COLOR` | Disable colored output |
 
 ### Settings Files
@@ -86,13 +86,13 @@ node dist/index.js
 4-level hierarchy (later overrides earlier):
 
 ```
-~/.c2a/settings.json           Global config (shared across projects)
-~/.c2a/settings.local.json     Global secrets (gitignored — API keys)
-.c2a/settings.json             Project config (committed, team-shared)
-.c2a/settings.local.json       Project secrets (gitignored, personal)
+~/.clio/settings.json           Global config (shared across projects)
+~/.clio/settings.local.json     Global secrets (gitignored — API keys)
+.clio/settings.json             Project config (committed, team-shared)
+.clio/settings.local.json       Project secrets (gitignored, personal)
 ```
 
-Example `~/.c2a/settings.json`:
+Example `~/.clio/settings.json`:
 
 ```json
 {
@@ -104,7 +104,7 @@ Example `~/.c2a/settings.json`:
   "allowOutsideCwd": false,
   "hooks": {
     "pre": [
-      { "command": "echo $C2A_TOOL_NAME", "tools": ["Bash"], "timeout": 5000 }
+      { "command": "echo $CLIO_TOOL_NAME", "tools": ["Bash"], "timeout": 5000 }
     ]
   },
   "mcpServers": {
@@ -195,15 +195,15 @@ Arrays (`allowRules`, `denyRules`, `hooks.pre`, `hooks.post`) concatenate across
 
 **Allow/Deny rules** match Bash commands with glob patterns:
 ```bash
-c2a --allow "npm *" --allow "git status" --deny "rm -rf *"
+clio --allow "npm *" --allow "git status" --deny "rm -rf *"
 ```
 
 ## Custom Agents
 
-Define reusable agent configurations in `.c2a/agents/`:
+Define reusable agent configurations in `.clio/agents/`:
 
 ```markdown
-<!-- .c2a/agents/reviewer.md -->
+<!-- .clio/agents/reviewer.md -->
 ---
 tools: Read, Grep, Glob
 model: claude-sonnet-4-20250514
@@ -243,7 +243,7 @@ Configure in settings.json to run shell commands before/after tool execution:
       { "command": "./validate.sh", "tools": ["Write", "Edit"], "timeout": 5000 }
     ],
     "post": [
-      { "command": "echo done >> /tmp/c2a.log" }
+      { "command": "echo done >> /tmp/clio.log" }
     ]
   }
 }
@@ -251,7 +251,7 @@ Configure in settings.json to run shell commands before/after tool execution:
 
 - **Pre-hooks**: Non-zero exit blocks tool execution
 - **Post-hooks**: Non-zero exit logged as warning, doesn't block
-- **Environment**: `C2A_TOOL_NAME`, `C2A_TOOL_INPUT` (JSON), `C2A_HOOK_PHASE`
+- **Environment**: `CLIO_TOOL_NAME`, `CLIO_TOOL_INPUT` (JSON), `CLIO_HOOK_PHASE`
 - **Scope**: `tools` array limits which tools trigger the hook (empty = all)
 
 ## Connection Modes
@@ -259,62 +259,66 @@ Configure in settings.json to run shell commands before/after tool execution:
 ```bash
 # Direct Anthropic API (default)
 export ANTHROPIC_API_KEY=sk-ant-xxx
-c2a
+clio
 
 # OpenAI-compatible endpoint
-c2a --api-url https://my-proxy.com --api-key sk-xxx --api-format openai
+clio --api-url https://my-proxy.com --api-key sk-xxx --api-format openai
 
 # Custom gateway
-c2a --api-url http://localhost:3000 --api-key sk-c2a-xxx
+clio --api-url http://localhost:3000 --api-key sk-xxx
 ```
 
 ## Sessions
 
-Conversations auto-save to `~/.c2a/sessions/{id}.json` after each turn.
+Conversations auto-save to `~/.clio/sessions/{id}.json` after each turn.
 
 ```bash
 # List recent sessions
-c2a    # then type /sessions
+clio    # then type /sessions
 
 # Resume a session
-c2a --resume a1b2c3d4
+clio --resume a1b2c3d4
 
 # Fork from existing session
-c2a --fork-session a1b2c3d4
+clio --fork-session a1b2c3d4
 ```
 
 ## Project Structure
 
 ```
 src/
-├── index.ts           Entry point, REPL, command routing (17 slash commands)
-├── agent.ts           Core agent loop with prompt caching + model-aware context
-├── client.ts          SSE streaming client (Anthropic + OpenAI format)
-├── tools.ts           16 tool definitions + local execution + truncation
-├── permissions.ts     Permission system (3 modes, allow/deny rules, auto classifier)
-├── context.ts         System prompt (environment, git, CLAUDE.md upward traversal)
-├── markdown.ts        Streaming markdown → ANSI renderer
-├── input.ts           Raw-mode terminal input (history, paste, tab, undo/redo)
-├── render.ts          ANSI colors, spinner, diff display, tool-specific rendering
-├── highlight.ts       Syntax highlighting (10 languages)
-├── hooks.ts           Pre/post tool execution hooks
-├── image.ts           Image file detection + base64 encoding
-├── session.ts         Session persistence + fork (~/.c2a/sessions/)
-├── settings.ts        4-level settings hierarchy + merge
-├── statusbar.ts       Configurable bottom status bar
-├── compact.ts         Conversation summarization via API
-├── init.ts            CLAUDE.md generation from project scan
-├── git-commands.ts    /commit, /pr, /review implementations
-├── subagent.ts        Sub-agent execution with iteration limit
-├── custom-agents.ts   .c2a/agents/*.md loader with front-matter parsing
-├── worktree.ts        Git worktree create/cleanup for isolated agents
-├── mcp.ts             MCP client (JSON-RPC 2.0 over stdio)
-├── tasks.ts           Task store for progress tracking
-├── file-completions.ts  @file Tab completion (fast-glob scan)
-├── checkpoint.ts      File snapshot + rollback for Write/Edit
-├── pricing.ts         Per-model USD cost estimation
-├── doctor.ts          /doctor system health checks
-└── types.ts           Shared TypeScript types
+├── index.ts                  Entry point, REPL, command routing (17 slash commands)
+├── types.ts                  Shared TypeScript types
+├── core/
+│   ├── agent.ts              Core agent loop with prompt caching + model-aware context
+│   ├── client.ts             SSE streaming client (Anthropic + OpenAI format)
+│   ├── compact.ts            Conversation summarization via API
+│   ├── context.ts            System prompt (environment, git, CLAUDE.md upward traversal)
+│   ├── permissions.ts        Permission system (3 modes, allow/deny rules, auto classifier)
+│   ├── pricing.ts            Per-model USD cost estimation
+│   ├── session.ts            Session persistence + fork (~/.clio/sessions/)
+│   └── settings.ts           4-level settings hierarchy + merge
+├── tools/
+│   ├── index.ts              16 tool definitions + local execution + truncation
+│   ├── checkpoint.ts         File snapshot + rollback for Write/Edit
+│   ├── hooks.ts              Pre/post tool execution hooks
+│   ├── mcp.ts                MCP client (JSON-RPC 2.0 over stdio)
+│   ├── subagent.ts           Sub-agent execution with iteration limit
+│   ├── tasks.ts              Task store for progress tracking
+│   └── worktree.ts           Git worktree create/cleanup for isolated agents
+├── ui/
+│   ├── render.ts             ANSI colors, spinner, diff display, tool-specific rendering
+│   ├── input.ts              Raw-mode terminal input (history, paste, tab, undo/redo)
+│   ├── markdown.ts           Streaming markdown → ANSI renderer
+│   ├── highlight.ts          Syntax highlighting (10 languages)
+│   ├── statusbar.ts          Configurable bottom status bar
+│   ├── image.ts              Image file detection + base64 encoding
+│   └── file-completions.ts   @file Tab completion (fast-glob scan)
+└── commands/
+    ├── git-commands.ts        /commit, /pr, /review implementations
+    ├── doctor.ts              /doctor system health checks
+    ├── init.ts                CLAUDE.md generation from project scan
+    └── custom-agents.ts       .clio/agents/*.md loader with front-matter parsing
 ```
 
 ## License

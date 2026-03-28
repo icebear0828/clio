@@ -1,5 +1,5 @@
 import { apiRequest } from "./client.js";
-import type { Config, Message, ContentBlock } from "./types.js";
+import type { Config, Message, ContentBlock } from "../types.js";
 
 const COMPACT_PROMPT =
   "Summarize the conversation so far in a concise but comprehensive way. " +
