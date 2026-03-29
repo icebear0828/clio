@@ -9,19 +9,26 @@ A feature-rich Claude Code clone that runs in your terminal. Connects to the Ant
 ## Quick Start
 
 ```bash
-# Install dependencies
+# Clone and install
+git clone https://github.com/anthropics/clio.git
+cd clio
 npm install
 
-# Set your API key
-export ANTHROPIC_API_KEY=sk-ant-xxx
+# Set your API key (pick one)
+export CLIO_API_KEY=sk-ant-xxx          # Linux/macOS
+set CLIO_API_KEY=sk-ant-xxx             # Windows CMD
+$env:CLIO_API_KEY = "sk-ant-xxx"        # PowerShell
 
-# Run directly (no build needed)
+# Run without building (development)
+npm run dev
+
+# Or build and install globally
+npm run build
+npm link                                # now `clio` is available everywhere
+
+# Use in any project
 cd your-project
-npx tsx /path/to/clio/src/index.ts
-
-# Or build first
-npx tsc
-node dist/index.js
+clio
 ```
 
 ## Features
@@ -272,7 +279,7 @@ Configure in settings.json to run shell commands before/after tool execution:
 
 ```bash
 # Direct Anthropic API (default)
-export ANTHROPIC_API_KEY=sk-ant-xxx
+export CLIO_API_KEY=sk-ant-xxx
 clio
 
 # OpenAI-compatible endpoint
@@ -280,6 +287,10 @@ clio --api-url https://my-proxy.com --api-key sk-xxx --api-format openai
 
 # Custom gateway
 clio --api-url http://localhost:3000 --api-key sk-xxx
+
+# Codex Proxy — use OpenAI Codex models via local relay
+# See https://github.com/icebear0828/codex-proxy
+clio --api-url http://localhost:8080/v1 --api-key <your-dashboard-key> --api-format openai --model codex
 ```
 
 ## Sessions
