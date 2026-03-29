@@ -10,7 +10,7 @@ A feature-rich Claude Code clone that runs in your terminal. Connects to the Ant
 
 ```bash
 # Clone and install
-git clone https://github.com/anthropics/clio.git
+git clone https://github.com/icebear0828/clio.git
 cd clio
 npm install
 

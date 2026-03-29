@@ -10,7 +10,7 @@
 
 ```bash
 # 克隆并安装
-git clone https://github.com/anthropics/clio.git
+git clone https://github.com/icebear0828/clio.git
 cd clio
 npm install
 
