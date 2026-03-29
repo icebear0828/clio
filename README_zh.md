@@ -9,19 +9,26 @@
 ## 快速开始
 
 ```bash
-# 安装依赖
+# 克隆并安装
+git clone https://github.com/icebear0828/clio.git
+cd clio
 npm install
 
-# 设置 API 密钥
-export ANTHROPIC_API_KEY=sk-ant-xxx
+# 设置 API 密钥（任选一种）
+export CLIO_API_KEY=sk-ant-xxx          # Linux/macOS
+set CLIO_API_KEY=sk-ant-xxx             # Windows CMD
+$env:CLIO_API_KEY = "sk-ant-xxx"        # PowerShell
 
-# 直接运行（无需构建）
+# 免构建运行（开发模式）
+npm run dev
+
+# 或构建后全局安装
+npm run build
+npm link                                # 之后可在任意目录使用 `clio`
+
+# 在任意项目中使用
 cd your-project
-npx tsx /path/to/clio/src/index.ts
-
-# 或者先构建
-npx tsc
-node dist/index.js
+clio
 ```
 
 ## 功能特性
@@ -272,7 +279,7 @@ MCP 工具以 `mcp__<server>__<tool>` 前缀出现，启动时自动发现。
 
 ```bash
 # 直连 Anthropic API（默认）
-export ANTHROPIC_API_KEY=sk-ant-xxx
+export CLIO_API_KEY=sk-ant-xxx
 clio
 
 # OpenAI 兼容端点
@@ -280,6 +287,10 @@ clio --api-url https://my-proxy.com --api-key sk-xxx --api-format openai
 
 # 自定义网关
 clio --api-url http://localhost:3000 --api-key sk-xxx
+
+# Codex Proxy — 通过本地中继使用 OpenAI Codex 模型
+# 详见 https://github.com/icebear0828/codex-proxy
+clio --api-url http://localhost:8080/v1 --api-key <控制面板生成的密钥> --api-format openai --model codex
 ```
 
 ## 会话
