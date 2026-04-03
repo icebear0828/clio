@@ -67,7 +67,7 @@ describe("PermissionManager", () => {
       // Mock promptUser to return "deny" so we can verify it was reached
       const spy = vi.spyOn(pm as never, "promptUser").mockResolvedValue("deny");
       expect(await pm.check("Bash", { command: "rm -rf /home" })).toBe("deny");
-      expect(spy).toHaveBeenCalledWith("Bash");
+      expect(spy).toHaveBeenCalledWith("Bash", expect.anything());
       spy.mockRestore();
     });
 
@@ -85,7 +85,7 @@ describe("PermissionManager", () => {
       pm.setAutoClassifier({ enabled: true });
       const spy = vi.spyOn(pm as never, "promptUser").mockResolvedValue("deny");
       expect(await pm.check("Write", { file_path: "x" })).toBe("deny");
-      expect(spy).toHaveBeenCalledWith("Write");
+      expect(spy).toHaveBeenCalledWith("Write", expect.anything());
       spy.mockRestore();
     });
   });

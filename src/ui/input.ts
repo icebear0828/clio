@@ -298,6 +298,8 @@ export class InputReader {
       let menuIdx = 0;
       let menuItems: Array<{ cmd: string; desc: string }> = [];
       let menuMode: "slash" | "file" | null = null;
+      let menuScroll = 0;
+      const MAX_VISIBLE_MENU = 6;
 
       const getAtToken = (line: string, cur: number): { start: number; token: string } | null => {
         let start = cur;
@@ -314,33 +316,60 @@ export class InputReader {
       const getFilteredCommands = (text: string) =>
         getSlashCommands().filter((c) => c.cmd.startsWith(text));
 
+      const getVisibleMenu = () => {
+        if (menuIdx < menuScroll) menuScroll = menuIdx;
+        if (menuIdx >= menuScroll + MAX_VISIBLE_MENU) menuScroll = menuIdx - MAX_VISIBLE_MENU + 1;
+        
+        const items = menuItems.slice(menuScroll, menuScroll + MAX_VISIBLE_MENU);
+        const showMore = menuItems.length > MAX_VISIBLE_MENU;
+        const totalLines = items.length + (showMore ? 1 : 0);
+        return { items, showMore, totalLines };
+      };
+
       const renderMenu = () => {
         if (menuItems.length === 0) return;
-        for (let m = 0; m < menuItems.length; m++) {
-          const item = menuItems[m];
-          const isSelected = m === menuIdx;
+        const { items, showMore, totalLines } = getVisibleMenu();
+        const cols = process.stdout.columns || 80;
+        for (let m = 0; m < items.length; m++) {
+          const item = items[m];
+          const globalIdx = menuScroll + m;
+          const isSelected = globalIdx === menuIdx;
           const prefix = isSelected ? boldCyan("\u276f") : " ";
           const cmdStr = isSelected ? boldCyan(item.cmd) : dim(item.cmd);
-          const descStr = dim(item.desc);
-          stdout.write(`\n  ${prefix} ${cmdStr}  ${descStr}`);
+          
+          const usedLen = 6 + item.cmd.length; // "  " + prefix + " " + cmd + "  "
+          const maxDescLen = Math.max(0, cols - usedLen - 2);
+          let safeDesc = item.desc;
+          if (safeDesc.length > maxDescLen) {
+            safeDesc = safeDesc.slice(0, Math.max(0, maxDescLen - 3)) + "...";
+          }
+          const descStr = dim(safeDesc);
+          
+          stdout.write(`\n\x1b[2K  ${prefix} ${cmdStr}  ${descStr}`);
         }
-        stdout.write(`\x1b[${menuItems.length}A`);
+        if (showMore) {
+          const end = Math.min(menuScroll + MAX_VISIBLE_MENU, menuItems.length);
+          stdout.write(`\n\x1b[2K  ${dim(`... ${menuScroll + 1}-${end} of ${menuItems.length} (use Up/Down)`)}`);
+        }
+        stdout.write(`\x1b[${totalLines}A`);
         positionCursor();
       };
 
       const clearMenu = () => {
         if (menuItems.length === 0) return;
-        stdout.write("\x1b7");
-        for (let m = 0; m < menuItems.length; m++) {
+        const { totalLines } = getVisibleMenu();
+        for (let m = 0; m < totalLines; m++) {
           stdout.write("\n\x1b[2K");
         }
-        stdout.write("\x1b8");
+        stdout.write(`\x1b[${totalLines}A`);
+        positionCursor();
       };
 
       const openMenu = (text: string) => {
         menuItems = getFilteredCommands(text);
         if (menuItems.length > 0) {
           menuIdx = 0;
+          menuScroll = 0;
           menuOpen = true;
           menuMode = "slash";
           renderMenu();
@@ -354,6 +383,7 @@ export class InputReader {
         if (items.length > 0) {
           menuItems = items;
           menuIdx = 0;
+          menuScroll = 0;
           menuOpen = true;
           menuMode = "file";
           renderMenu();
@@ -362,11 +392,12 @@ export class InputReader {
 
       const closeMenu = () => {
         if (menuOpen) {
-          clearMenu();
-          menuOpen = false;
-          menuItems = [];
-          menuIdx = 0;
-          menuMode = null;
+           clearMenu();
+           menuOpen = false;
+           menuItems = [];
+           menuIdx = 0;
+           menuScroll = 0;
+           menuMode = null;
         }
       };
 
@@ -512,7 +543,6 @@ export class InputReader {
 
           case "history-prev":
             if (menuOpen) {
-              clearMenu();
               menuIdx = (menuIdx - 1 + menuItems.length) % menuItems.length;
               renderMenu();
             } else if (lineIdx > 0) {
@@ -527,7 +557,6 @@ export class InputReader {
 
           case "history-next":
             if (menuOpen) {
-              clearMenu();
               menuIdx = (menuIdx + 1) % menuItems.length;
               renderMenu();
             } else if (lineIdx < lines.length - 1) {
@@ -721,7 +750,11 @@ export class InputReader {
                 cursor = matches[0].cmd.length;
                 redraw();
               } else if (matches.length > 1) {
-                openMenu(currentText);
+                if (menuOpen) {
+                  updateMenu(currentText);
+                } else {
+                  openMenu(currentText);
+                }
               }
             } else if (self.fileCompleter) {
               const atToken = getAtToken(currentText, cursor);

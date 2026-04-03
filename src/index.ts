@@ -28,6 +28,7 @@ import { parseInputWithImages } from "./ui/image.js";
 import { StatusBar } from "./ui/statusbar.js";
 import { FileCompleter, resolveFileReferences } from "./ui/file-completions.js";
 import { CheckpointManager } from "./tools/checkpoint.js";
+import { historyCommand, undoCommand } from "./commands/history.js";
 import { SectionCache } from "./core/section-cache.js";
 import { initPlugins } from "./plugins/index.js";
 import { stdin } from "node:process";
@@ -919,6 +920,17 @@ async function main(): Promise<void> {
       continue;
     }
 
+    if (trimmed === "/history") {
+      await historyCommand(checkpointManager);
+      continue;
+    }
+
+    if (trimmed.startsWith("/undo")) {
+      const id = trimmed.slice(5).trim();
+      await undoCommand(checkpointManager, id, messages);
+      continue;
+    }
+
     if (trimmed === "/settings") {
       const s = await loadSettings();
       const info = await getSettingsInfo();
@@ -1007,10 +1019,10 @@ async function main(): Promise<void> {
             messages.length = checkpointManager.getMessageCountBefore();
             process.stderr.write(dim(`  Rolled back ${restored.length} file(s).\n`));
           } else {
-            checkpointManager.commit();
+            await checkpointManager.commit();
           }
         } else {
-          checkpointManager.commit();
+          await checkpointManager.commit();
         }
         await session.save(messages, sessionUsage).catch(() => {});
         console.log();
@@ -1153,10 +1165,10 @@ async function main(): Promise<void> {
             messages.length = checkpointManager.getMessageCountBefore();
             process.stderr.write(dim(`  Rolled back ${restored.length} file(s).\n`));
           } else {
-            checkpointManager.commit();
+            await checkpointManager.commit();
           }
         } else {
-          checkpointManager.commit();
+          await checkpointManager.commit();
         }
         await session.save(messages, sessionUsage).catch(() => {});
         console.log();
@@ -1232,10 +1244,10 @@ async function main(): Promise<void> {
         messages.length = checkpointManager.getMessageCountBefore();
         process.stderr.write(dim(`  Rolled back ${restored.length} file(s).\n`));
       } else {
-        checkpointManager.commit();
+        await checkpointManager.commit();
       }
     } else {
-      checkpointManager.commit();
+      await checkpointManager.commit();
     }
 
     // Auto-save after each turn
